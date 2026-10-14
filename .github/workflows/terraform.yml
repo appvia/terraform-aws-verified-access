@@ -18,3 +18,15 @@ jobs:
     name: Module Validation
     with:
       working-directory: .
+
+  group-module-validation:
+    uses: appvia/appvia-cicd-workflows/.github/workflows/terraform-module-validation.yml@f2a5b0a646a988f5a0e80df7447aede6c07bbb44 # main
+    name: Group Module Validation
+    with:
+      working-directory: modules/group
+
+  endpoint-module-validation:
+    uses: appvia/appvia-cicd-workflows/.github/workflows/terraform-module-validation.yml@f2a5b0a646a988f5a0e80df7447aede6c07bbb44 # main
+    name: Endpoint Module Validation
+    with:
+      working-directory: modules/endpoint

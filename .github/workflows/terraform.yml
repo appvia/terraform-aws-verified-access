@@ -1,0 +1,20 @@
+---
+name: Terraform
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  module-validation:
+    uses: appvia/appvia-cicd-workflows/.github/workflows/terraform-module-validation.yml@f2a5b0a646a988f5a0e80df7447aede6c07bbb44 # main
+    name: Module Validation
+    with:
+      working-directory: .

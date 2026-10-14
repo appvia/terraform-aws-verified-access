@@ -1,6 +1,7 @@
 
+## Terraform >= 1.9 is required for validations that reference other variables
 terraform {
-  required_version = ">= 1.0.7"
+  required_version = ">= 1.9.0"
 
   required_providers {
     # tflint-ignore: terraform_unused_required_providers

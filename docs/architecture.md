@@ -121,7 +121,20 @@ Every rule is scoped to one port and one destination: an endpoint can only reach
 
 ### With an inspection VPC
 
-With a central network firewall, the ingress VPC's transit gateway attachment is associated with the inspection route table instead, so traffic to tenants passes the firewall: one setting in the connectivity configuration, no change to Verified Access. The firewall must allow the endpoint subnets to the tenant ports.
+**Recommendation: inspect.** With a central network firewall, associate the transit gateway attachment of the VPC holding the endpoints and the NLB with the inspection route table, so traffic to tenants passes the firewall like any other east-west traffic: one setting in the connectivity configuration, no change to Verified Access. The firewall must allow the endpoint subnets to the tenant ports. This path is validated by routing analysis, not tested.
+
+## Alongside the existing ingress path
+
+Public services keep their existing path (for example CloudFront, AWS WAF, the network firewall and a shared public load balancer, then the transit gateway to the tenant). Verified Access is a **separate path for the workforce**, so it neither duplicates nor bypasses that path:
+
+| | Public ingress | Verified Access |
+| --- | --- | --- |
+| Who | Anyone on the internet (customers, the public) | Signed in staff, per identity group |
+| What | Public applications | Private administration and internal applications (SSH, RDP, databases, internal web tools) |
+| Edge | CloudFront, WAF, public load balancer | Verified Access, with an internal NLB (no public load balancer, no public address on any tenant service) |
+| Controls | WAF rules, firewall | Cedar policy per request, identity (and optionally device), plus the same firewall when inspection is in place |
+
+Rules that keep them separate: never point a Verified Access endpoint at a public load balancer, and never expose an internal application publicly to make it reachable; use a Verified Access endpoint instead. For HTTP endpoints, Verified Access can also be associated with an AWS WAF web ACL if application layer filtering is needed.
 
 ## Traffic paths
 
@@ -154,6 +167,8 @@ sequenceDiagram
 - Proven: SSH from a laptop to a host in a spoke VPC.
 
 ### HTTP and HTTPS in the browser (no client)
+
+Users always connect to Verified Access over **HTTPS**; Verified Access then talks to the application over HTTP or HTTPS (the endpoint `protocol`). Proving HTTPS to the user with HTTP to the application covers both.
 
 ```mermaid
 sequenceDiagram

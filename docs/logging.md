@@ -15,6 +15,8 @@ Verified Access logs every access attempt, allowed or denied, in Open Cybersecur
 
 The module warns at plan time when no access logging is configured.
 
+**Consistency with VPC flow logs:** treat access logs like flow logs, as network security records: same log archive account, same retention class, same read restrictions and immutability. Where an estate has no established flow log pattern to mirror, these decisions set it.
+
 ## What a log event tells you
 
 A denied SSH attempt (trimmed). `include_trust_context = true` is what makes the `context` block, and therefore the reason, visible:

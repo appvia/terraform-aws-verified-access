@@ -80,19 +80,19 @@ run "identity_center_group_policy" {
   }
 }
 
-run "identity_center_group_policy_without_verified_email" {
+run "identity_center_group_policy_with_verified_email" {
   command = plan
 
   variables {
     user_trust_provider = {
       type                   = "iam-identity-center"
-      require_verified_email = false
+      require_verified_email = true
     }
   }
 
   assert {
-    condition     = output.rendered_policies["group/platform-engineers"] == file("./tests/golden/group-identity-center-no-email.cedar")
-    error_message = "The group policy without verified email should match tests/golden/group-identity-center-no-email.cedar"
+    condition     = output.rendered_policies["group/platform-engineers"] == file("./tests/golden/group-identity-center-verified-email.cedar")
+    error_message = "The group policy with verified email should match tests/golden/group-identity-center-verified-email.cedar"
   }
 }
 

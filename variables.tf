@@ -171,7 +171,9 @@ variable "groups" {
     }), null)
     ## The endpoints in this group keyed by name; names must be unique across all groups
     endpoints = optional(map(object({
-      # The endpoint type (load-balancer, network-interface, cidr, rds)
+      # The endpoint type (load-balancer, network-interface, cidr, rds); cidr endpoints only reach addresses in the
+      # endpoint's own VPC, so reach services across a transit gateway with a load-balancer endpoint and an NLB
+      # with IP targets
       type = string
       # The description of the endpoint
       description = optional(string, null)
@@ -420,8 +422,9 @@ variable "user_trust_provider" {
     type = string
     ## The Cedar context key for the provider, used by both the trust provider and the rendered policies
     policy_reference_name = optional(string, "idc")
-    ## Require a verified email address (IAM Identity Center only)
-    require_verified_email = optional(bool, true)
+    ## Require a verified email address (IAM Identity Center only); off by default, as directories that do not
+    ## verify emails (Identity Center reports email.verified = false) would deny every user
+    require_verified_email = optional(bool, false)
     ## The OIDC settings, required when type is oidc
     oidc = optional(object({
       # The OIDC issuer identifier

@@ -14,6 +14,37 @@ This page describes the recommended design for a hub-and-spoke landing zone, how
 
 A feature that only makes sense for one customer's topology goes in the deployment repository, never the module.
 
+## Supported topologies
+
+The same module serves three topologies; only the deployment around it changes.
+
+| Pattern | Example | Path | Central NLB? | Reference |
+| --- | --- | --- | --- | --- |
+| **A. Hub with inspection** | A landing zone with a central network firewall | Endpoints and NLB in the hub, transit gateway, **firewall**, tenant spoke | **Yes** | This page, with the [inspection](#with-an-inspection-vpc) setting |
+| **B. Hub without inspection** | A landing zone with a transit gateway | Endpoints and NLB in the hub, transit gateway, tenant spoke | **Yes** | This page (proven) |
+| **C. Single VPC** | A small estate, or trying the module | Endpoints in the **same VPC** as the services | **No** | [`examples/basic`](../examples/basic) |
+
+```mermaid
+flowchart LR
+  subgraph C[Pattern C: single VPC]
+    direction LR
+    VA1[Verified Access] --> EP1[Endpoint<br/>cidr, network-interface<br/>or the app's own load balancer] --> APP1[Service<br/>same VPC]
+  end
+  subgraph AB[Patterns A and B: hub and spoke]
+    direction LR
+    VA2[Verified Access] --> EP2[Endpoint<br/>load-balancer] --> NLB[Central NLB<br/>IP targets] --> FW{{Firewall<br/>pattern A only}} --> TGW((Transit<br/>gateway)) --> APP2[Service<br/>tenant spoke]
+  end
+```
+
+### Do I need the central NLB?
+
+| Where is the service? | Endpoint type | NLB |
+| --- | --- | --- |
+| Same VPC as the endpoints | `cidr` (SSH, RDP by address), `network-interface`, `rds`, or `load-balancer` pointing at the application's own load balancer | **Not needed** |
+| Another VPC (spoke behind a transit gateway, or peered) | `load-balancer`, TCP or HTTP | **Needed**: endpoints only reach load balancers and addresses in their own VPC, and a `cidr` endpoint targeting an address in another VPC is rejected |
+
+The NLB is shared: one NLB, one listener port per application, up to 50 listeners.
+
 ## Where everything lives
 
 ```mermaid

@@ -76,7 +76,7 @@ Policies are declared as structured input (`groups[*].policy`) and rendered to C
 
 ## Documentation
 
-Design, operations and the findings of the spike that proved this module are in [docs/](docs/README.md): [architecture](docs/architecture.md), [approval gate](docs/approval-gate.md), [observability](docs/observability.md), [logging](docs/logging.md), [cost](docs/cost.md), [migration](docs/migration.md), [runbook](docs/runbook.md) and the [decision records](docs/adr/).
+Design, operations and the findings of the spike that proved this module are in [docs/](docs/README.md): [architecture](docs/architecture.md), [limitations](docs/limitations.md), [approval gate](docs/approval-gate.md), [observability](docs/observability.md), [logging](docs/logging.md), [cost](docs/cost.md), [migration](docs/migration.md), [runbook](docs/runbook.md) and the [decision records](docs/adr/).
 
 ## Update Documentation
 

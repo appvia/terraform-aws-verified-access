@@ -2,6 +2,7 @@
 
 | Page | What it covers |
 | --- | --- |
+| [Limitations](limitations.md) | What the service and the design cannot do, and the workarounds |
 | [Architecture](architecture.md) | Design, network, traffic paths, endpoint types, quotas, requesting access |
 | [Approval gate](approval-gate.md) | Who approves, where, and the audit trail |
 | [Observability](observability.md) | Metrics, alarms and thresholds, Dash0 route |

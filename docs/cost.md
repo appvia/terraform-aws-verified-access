@@ -22,30 +22,61 @@ Prices are AWS list prices from the [Verified Access pricing page](https://aws.a
 | Metric stream (module option `metric_stream`) | $0.003 per 1,000 metric updates, plus the Firehose delivery stream | A few dollars at these metric counts |
 | AWS WAF (module option `waf`, created web ACL) | $5 per web ACL plus $1 per rule group a month, plus $0.60 per million requests | **about $8**, plus requests |
 
-## What it replaces
+## Comparing with per user jump boxes
 
-| Option | Infrastructure per month | Hidden costs |
+Many estates reach private systems through a hosted desktop per user (for example Amazon WorkSpaces used as a jump box). The two are priced on different axes, so the comparison is a **break-even model**, not a single answer:
+
+| | Priced per | Grows when |
 | --- | --- | --- |
-| **Bastion host** (for example t3.small, disk, per tenant or environment) | about $15 to $20, **shared by all the applications behind it** | Patching, hardening, monitoring, key management and access reviews; broad network reach (a bastion can reach far more than the task needs); a weak audit trail (who did what, per user) |
-| **Hosted workstation** (for example Amazon WorkSpaces, per user) | about $25 to $45 per user (bundle and billing mode dependent) | Image management, patching, licensing; scales per user, not per application |
-| **Verified Access** | about $146 per TCP endpoint or $197 per HTTP application, plus a shared NLB | Endpoint and policy changes through pull requests; the Connectivity Client on macOS and Windows |
+| Per user jump box | **User** (always on or hourly, bundle dependent) | People are added |
+| Verified Access | **Application** (endpoint hour), any number of users | Applications are added |
 
-## Worked comparison
+**The model** (monthly, list prices above):
 
-Assumptions (illustrative; replace with the customer's numbers): an engineer hour costs $75; a bastion takes 4 hours a month to patch, monitor and review; each tenant has one bastion in front of its applications.
+```text
+Verified Access  = 146 x TCP applications + 197 x web applications + 20 (shared NLB) + options
+Jump boxes       = users x price per user
+Break-even users = Verified Access / price per user
+```
 
-| Estate | Bastions | Verified Access |
-| --- | --- | --- |
-| 1 tenant, 2 applications (SSH + web) | $18 + 4 h x $75 = **$318** | $146 + $197 + $20 NLB = **$363** |
-| 10 tenants, 2 applications each | 10 x $318 = **$3,180** | 10 x $343 + $20 = **$3,450** |
-| 10 tenants, 2 TCP applications each | **$3,180** | 20 x $146 + $20 = **$2,940** |
+Above the break-even number of users, Verified Access costs less for that set of applications; below it, the jump boxes do.
 
-**Reading the numbers:**
+### Break-even at a glance
 
-- On infrastructure alone, Verified Access costs **more** than a bastion, because it is priced **per application** while one bastion serves many.
-- Once the operating effort of standing compute is counted, the two are close; Verified Access wins where bastions need regular patching and access reviews, and where applications are mostly TCP.
-- The case for Verified Access is mainly **not** cost: per request identity checks (and device posture where available), access scoped to one application instead of a network, a per user audit trail of every attempt, and no standing compute to attack or maintain.
-- Cost grows with the **number of applications**, so keep endpoints to what is actually needed, and group several ports of one service on one endpoint (TCP endpoints accept port ranges).
+Users needed for Verified Access to cost the same as jump boxes, for three per user prices (replace with the customer's bundle price):
+
+| Applications behind the jump boxes | Verified Access per month | at $25 a user | at $35 a user | at $45 a user |
+| --- | --- | --- | --- | --- |
+| 1 TCP (for example SSH to a host group) | $166 | 7 | 5 | 4 |
+| 1 TCP + 1 web | $363 | 15 | 11 | 9 |
+| 5 TCP | $750 | 30 | 22 | 17 |
+| 5 TCP + 5 web | $1,735 | 70 | 50 | 39 |
+
+### Working it from a current spend
+
+Start from what the customer spends today and ask what the same money buys:
+
+1. **Current spend** on jump boxes, for example **$2,000 a month**.
+2. **Users**: spend / price per user, for example $2,000 / $40 = **50 users**.
+3. **Applications those users reach** through the jump boxes (only those used as a hop; desktops used for real work stay).
+4. **Verified Access for those applications**, from the model above.
+
+For the example $2,000 a month, the same budget covers about **13 TCP applications** or **10 web applications** ((2,000 - 20) / 146 and / 197), for any number of users. If the jump boxes front fewer applications than that, Verified Access costs less; if more, it costs more on infrastructure alone.
+
+### What the model leaves out
+
+- **Operating effort** on both sides: desktop images, patching and licensing for jump boxes; pull request changes and the Connectivity Client rollout for Verified Access. Add the customer's own figures when known.
+- **Other uses of the desktops**: a jump box that is also someone's working desktop is not fully replaced.
+- **Pricing details**: hourly billing modes, regional uplift and committed discounts on either side. Check current prices before quoting.
+- **Security value**, which is not priced: identity checked on every request, access scoped to one application instead of a network, a per user audit trail of every attempt, and no standing compute to attack or maintain.
+
+### Against a bastion host
+
+A shared bastion (for example a t3.small, about $15 to $20 a month) costs less on infrastructure than any Verified Access endpoint, because one bastion serves many applications. The case there rests on removing its operating effort (patching, hardening, key management, access reviews) and its broad network reach, not on infrastructure cost.
+
+### Keeping the cost down
+
+Cost grows with the **number of applications**, not users. Keep endpoints to what is actually needed, and group several ports of one service on one TCP endpoint (TCP endpoints accept port ranges).
 
 ## The spike itself
 

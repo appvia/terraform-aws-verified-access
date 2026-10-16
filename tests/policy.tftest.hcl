@@ -202,3 +202,110 @@ run "non_sensitive_endpoint_has_no_policy" {
     error_message = "Two group policies and two endpoint policies should be rendered"
   }
 }
+
+run "structured_endpoint_policy" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111", "d242c5b0-6081-1845-6fa8-6e0d9513c107"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          ## Narrows the group to one of its identity groups, adds a condition and requires device posture
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            sensitive   = true
+            policy = {
+              identity_groups       = ["d242c5b0-6081-1845-6fa8-6e0d9513c107"]
+              additional_conditions = ["context.idc.user.email.address like \"*@example.com\" || context.idc.user.email.address like \"*@example.org\""]
+              owner                 = "security-team"
+              justification         = "Only the on-call group may reach the production database hosts"
+            }
+          }
+          ## Inherits the group's owner and justification
+          demo-db = {
+            type = "rds"
+            port = 5432
+            rds = {
+              instance_arn = "arn:aws:rds:eu-west-2:111111111111:db:demo"
+              endpoint     = "demo.abc.eu-west-2.rds.amazonaws.com"
+            }
+            policy = {
+              identity_groups = ["11111111-1111-1111-1111-111111111111"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = output.rendered_policies["endpoint/demo-ssh"] == file("./tests/golden/endpoint-structured.cedar")
+    error_message = "The structured endpoint policy should match tests/golden/endpoint-structured.cedar"
+  }
+
+  assert {
+    condition     = output.rendered_policies["endpoint/demo-db"] == file("./tests/golden/endpoint-structured-group-owner.cedar")
+    error_message = "The structured endpoint policy without its own owner should match tests/golden/endpoint-structured-group-owner.cedar"
+  }
+
+  assert {
+    condition     = output.rendered_policies["group/platform-engineers"] == file("./tests/golden/group-identity-center.cedar")
+    error_message = "An endpoint policy should not change its group policy"
+  }
+}
+
+run "oidc_groups_claim" {
+  command = plan
+
+  variables {
+    oidc_client_secret = "x"
+    user_trust_provider = {
+      type                  = "oidc"
+      policy_reference_name = "okta"
+      oidc = {
+        issuer                 = "https://example.okta.com"
+        authorization_endpoint = "https://example.okta.com/a"
+        token_endpoint         = "https://example.okta.com/t"
+        user_info_endpoint     = "https://example.okta.com/u"
+        client_id              = "c"
+        groups_claim           = "additional_user_context.groups"
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["platform-engineers", "admins"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["admins"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = output.rendered_policies["group/platform-engineers"] == file("./tests/golden/group-oidc-groups-claim.cedar")
+    error_message = "The OIDC group policy with a groups claim should match tests/golden/group-oidc-groups-claim.cedar"
+  }
+
+  assert {
+    condition     = output.rendered_policies["endpoint/demo-ssh"] == file("./tests/golden/endpoint-structured-oidc.cedar")
+    error_message = "The OIDC endpoint policy should match tests/golden/endpoint-structured-oidc.cedar"
+  }
+}

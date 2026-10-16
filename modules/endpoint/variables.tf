@@ -56,6 +56,12 @@ variable "name" {
   type        = string
 }
 
+variable "name_prefix" {
+  description = "The prefix of the endpoint security group name, following the caller's naming convention"
+  type        = string
+  default     = "verified-access"
+}
+
 variable "network_interface_id" {
   description = "The network interface reached through the endpoint (network-interface endpoints)"
   type        = string

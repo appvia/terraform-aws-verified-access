@@ -1,0 +1,15 @@
+// managed-by: terraform-aws-verified-access
+// kind: group
+// name: platform-engineers
+// source: structured
+// owner: platform-team
+// justification: Platform engineers operate the demo tenant hosts
+// user-context: okta
+// device-context: crowdstrike
+permit(principal, action, resource)
+when {
+  (
+    context.okta.additional_user_context.groups.contains("admins") ||
+    context.okta.additional_user_context.groups.contains("platform-engineers")
+  )
+};

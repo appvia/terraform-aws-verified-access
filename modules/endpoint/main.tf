@@ -1,9 +1,9 @@
 
 ## Provision the security group for the endpoint network interfaces, permitting traffic only to its targets on its ports
 resource "aws_security_group" "current" {
-  name        = format("verified-access-%s", var.name)
+  name        = format("%s-%s", var.name_prefix, var.name)
   description = format("Verified Access endpoint %s", var.name)
-  tags        = merge(var.tags, { Name = format("verified-access-%s", var.name) })
+  tags        = merge(var.tags, { Name = format("%s-%s", var.name_prefix, var.name) })
   vpc_id      = var.vpc_id
 
   dynamic "egress" {

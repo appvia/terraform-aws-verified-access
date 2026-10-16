@@ -5,8 +5,12 @@ locals {
   enable_cloudwatch_logs = local.enable_access_logs ? var.access_logs.cloudwatch != null : false
   ## Indicates the log derived metric filters and saved queries are created
   enable_metric_filters = local.enable_cloudwatch_logs ? var.access_logs.cloudwatch.enable_metric_filters : false
+  ## Indicates the module creates the CloudWatch log group, rather than delivering to an existing one
+  enable_log_group = local.enable_cloudwatch_logs ? var.access_logs.cloudwatch.create_log_group : false
   ## The name of the CloudWatch log group for the access logs
-  log_group_name = local.enable_cloudwatch_logs ? coalesce(var.access_logs.cloudwatch.log_group_name, format("/aws/verified-access/%s", var.name)) : null
+  log_group_name = local.enable_cloudwatch_logs ? coalesce(var.access_logs.cloudwatch.log_group_name, format("/aws/%s/%s", var.name_prefix, var.name)) : null
+  ## The log group the logs, metric filters and queries use: the created one (so it exists first), or the existing one
+  access_log_group = local.enable_log_group ? aws_cloudwatch_log_group.access_logs[0].name : local.log_group_name
   ## The CloudWatch metric namespace for the log derived metrics
   metric_namespace = format("VerifiedAccess/%s", var.name)
 
@@ -38,9 +42,9 @@ locals {
   }
 }
 
-## Provision the CloudWatch log group so retention (personal data) is always bounded
+## Provision the CloudWatch log group so retention (personal data) is always bounded, unless an existing one is used
 resource "aws_cloudwatch_log_group" "access_logs" {
-  count = local.enable_cloudwatch_logs ? 1 : 0
+  count = local.enable_log_group ? 1 : 0
 
   kms_key_id        = var.access_logs.cloudwatch.kms_key_arn
   name              = local.log_group_name
@@ -60,7 +64,7 @@ resource "aws_verifiedaccess_instance_logging_configuration" "current" {
 
     cloudwatch_logs {
       enabled   = local.enable_cloudwatch_logs
-      log_group = local.enable_cloudwatch_logs ? aws_cloudwatch_log_group.access_logs[0].name : null
+      log_group = local.access_log_group
     }
 
     kinesis_data_firehose {
@@ -81,8 +85,8 @@ resource "aws_verifiedaccess_instance_logging_configuration" "current" {
 resource "aws_cloudwatch_log_metric_filter" "access" {
   for_each = local.enable_metric_filters ? local.metric_filters : {}
 
-  log_group_name = aws_cloudwatch_log_group.access_logs[0].name
-  name           = format("verified-access-%s-%s", var.name, each.key)
+  log_group_name = local.access_log_group
+  name           = format("%s-%s", local.resource_name, each.key)
   pattern        = each.value.pattern
 
   metric_transformation {
@@ -98,7 +102,7 @@ resource "aws_cloudwatch_log_metric_filter" "access" {
 resource "aws_cloudwatch_query_definition" "access" {
   for_each = local.enable_metric_filters ? local.queries : {}
 
-  log_group_names = [aws_cloudwatch_log_group.access_logs[0].name]
-  name            = format("verified-access/%s/%s", var.name, each.key)
+  log_group_names = [local.access_log_group]
+  name            = format("%s/%s/%s", var.name_prefix, var.name, each.key)
   query_string    = each.value
 }

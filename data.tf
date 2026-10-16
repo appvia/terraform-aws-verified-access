@@ -13,3 +13,18 @@ data "aws_subnet" "load_balancer" {
 
   id = var.subnet_ids[count.index]
 }
+
+## Find the subnets endpoints override; the module creates each endpoint's security group in var.vpc_id, so they must
+## be in that VPC
+data "aws_subnet" "endpoint" {
+  for_each = toset(flatten([for endpoint in values(local.endpoints) : endpoint.subnet_ids != null ? endpoint.subnet_ids : []]))
+
+  id = each.value
+
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = format("The subnet %s is in %s, but endpoint security groups are created in var.vpc_id (%s); endpoint subnet_ids must be in var.vpc_id.", self.id, self.vpc_id, var.vpc_id)
+    }
+  }
+}

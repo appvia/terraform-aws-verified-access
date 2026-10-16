@@ -313,3 +313,62 @@ run "alarms_disabled" {
     error_message = "The alarm topic output should be null when alarms are disabled"
   }
 }
+
+run "customised_alarms" {
+  command = apply
+
+  variables {
+    topology = "hub"
+    alarms = {
+      disabled               = ["access-denied", "unhealthy-targets"]
+      additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty"]
+      thresholds = {
+        http_504 = 10
+      }
+      overrides = {
+        http-504           = { threshold = 25, period = 60, evaluation_periods = 3 }
+        no-healthy-targets = { evaluation_periods = 5 }
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = toset(keys(aws_cloudwatch_metric_alarm.current)) == toset(["http-504", "logging-stopped", "no-access-allowed", "app-ssh-no-healthy-targets"])
+    error_message = "Disabled alarms should not be created"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.current["http-504"].threshold == 25,
+      aws_cloudwatch_metric_alarm.current["http-504"].period == 60,
+      aws_cloudwatch_metric_alarm.current["http-504"].evaluation_periods == 3,
+      aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].evaluation_periods == 5,
+      aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].period == 60,
+      aws_cloudwatch_metric_alarm.current["logging-stopped"].period == 3600,
+    ])
+    error_message = "Overrides should win over the thresholds and defaults, leaving the rest unchanged"
+  }
+
+  assert {
+    condition = alltrue([
+      for alarm in aws_cloudwatch_metric_alarm.current : toset(alarm.alarm_actions) == toset([aws_sns_topic.alarms[0].arn, "arn:aws:sns:eu-west-2:111111111111:pagerduty"]) && toset(alarm.ok_actions) == toset(alarm.alarm_actions)
+    ])
+    error_message = "Every alarm should notify the topic and the additional actions, on alarm and on recovery"
+  }
+}

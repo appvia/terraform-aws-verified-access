@@ -13,6 +13,11 @@ output "alarm_topic_arn" {
   value       = local.alarm_topic_arn
 }
 
+output "application_domains" {
+  description = "A map of application domain to the endpoint domain it must be a CNAME of, for http and https endpoints i.e. tools.example.com => tools-web.edge-xxx.vai-xxx.prod.verified-access.eu-west-2.amazonaws.com; published by the module with dns"
+  value       = { for name, domain in local.application_endpoints : domain => module.endpoints[name].endpoint_domain }
+}
+
 output "certificate_arn" {
   description = "The ARN of the wildcard certificate requested by the module, when enabled"
   value       = local.enable_certificate ? aws_acm_certificate.current[0].arn : null
@@ -23,6 +28,16 @@ output "certificate_validation_records" {
   value       = local.enable_certificate ? { for option in aws_acm_certificate.current[0].domain_validation_options : option.resource_record_name => option.resource_record_value } : {}
 }
 
+output "client_configuration_command" {
+  description = "The AWS CLI command exporting the Connectivity Client configuration of the instance; needs ec2:ExportVerifiedAccessInstanceClientConfiguration"
+  value = format(
+    "aws ec2 export-verified-access-instance-client-configuration --verified-access-instance-id %s --region %s > ClientConfig-%s.json",
+    aws_verifiedaccess_instance.current.id,
+    data.aws_region.current.region,
+    var.name,
+  )
+}
+
 output "dashboard_name" {
   description = "The name of the CloudWatch dashboard, when enabled"
   value       = local.enable_dashboard ? aws_cloudwatch_dashboard.current[0].dashboard_name : null
@@ -31,6 +46,11 @@ output "dashboard_name" {
 output "device_trust_provider_id" {
   description = "The id of the device trust provider, when configured"
   value       = local.enable_device_trust ? aws_verifiedaccess_trust_provider.device[0].id : null
+}
+
+output "endpoint_device_validation_domains" {
+  description = "A map of endpoint name to the domain Verified Access uses to validate devices for it"
+  value       = { for name, endpoint in module.endpoints : name => endpoint.device_validation_domain }
 }
 
 output "endpoint_domains" {
@@ -48,9 +68,19 @@ output "endpoint_security_group_ids" {
   value       = { for name, endpoint in module.endpoints : name => endpoint.security_group_id }
 }
 
+output "group_arns" {
+  description = "A map of group name to Verified Access group ARN, e.g. for IAM policies or sharing"
+  value       = { for name, group in module.groups : name => group.arn }
+}
+
 output "group_ids" {
   description = "A map of group name to Verified Access group id"
   value       = { for name, group in module.groups : name => group.id }
+}
+
+output "instance_arn" {
+  description = "The ARN of the Verified Access instance"
+  value       = local.instance_arn
 }
 
 output "instance_id" {
@@ -83,12 +113,22 @@ output "name_servers" {
   value       = aws_verifiedaccess_instance.current.name_servers
 }
 
+output "oidc_redirect_uris" {
+  description = "A map of http and https endpoint name to the sign-in redirect URI to register with the OIDC client (https://<application_domain>/oauth2/idpresponse), when the user trust provider is oidc"
+  value       = var.user_trust_provider.type == "oidc" ? { for name, domain in local.application_endpoints : name => format("https://%s/oauth2/idpresponse", domain) } : {}
+}
+
 output "rendered_policies" {
   description = "A map of the rendered Cedar policies i.e. group/<name> and endpoint/<name> => policy; used for review, lint and golden tests"
   value = merge(
     { for name, policy in local.group_policies : format("group/%s", name) => policy },
     { for name, policy in local.endpoint_policies : format("endpoint/%s", name) => policy },
   )
+}
+
+output "target_group_arns" {
+  description = "A map of endpoint name to the ARN of its target group on the central load balancer, for endpoints with targets"
+  value       = { for name, target_group in aws_lb_target_group.current : name => target_group.arn }
 }
 
 output "user_trust_provider_id" {

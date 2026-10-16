@@ -84,17 +84,52 @@ Policies are declared as structured input (`groups[*].policy`: `identity_groups`
 | --- | --- | --- |
 | **Plan time validation** | Rejects malformed or over-broad input, for example an empty `identity_groups` (an unscoped permit, which would let anyone who can sign in through), Identity Center group names instead of ids, a missing owner or a justification under 10 characters, or an endpoint marked `sensitive` without a `device_trust_provider` | `variables.tf`, at `terraform plan` |
 | **Sensitive endpoints** | Receive an endpoint policy requiring device posture; group and endpoint policies must both allow | Module, `sensitive = true` on an endpoint |
+| **Endpoint policies** | Narrow one endpoint within its group, rendered and linted like group policies ([endpoint policies](#endpoint-policies)) | Module, `policy` on an endpoint |
 | **Lint** | `scripts/cedar-lint.sh` checks rendered and raw policies against the rule set documented in the script (L1 to L7: parse with the official Cedar CLI, no unscoped permit, owner and justification, device context on sensitive endpoints, raw policies listed); `scripts/test-cedar-lint.sh` proves each rule | The Access Policy Gate in the deployment pipeline |
 | **Golden files** | `tests/policy.tftest.hcl` asserts the rendered Cedar for each scenario against `tests/golden/*.cedar`, so a change in policy semantics is visible in the diff | This repository |
 | **Reviewed copy** | The deployment repository keeps a copy of every rendered policy in `policies/`; a test fails if they differ, so every access change shows its Cedar diff in the pull request | Deployment repository |
 | **Escape hatch** | `raw_policy` accepts hand written Cedar where the structured input cannot express a rule; keep raw policies in a dedicated directory protected by `CODEOWNERS` so they always receive a security review | Deployment repository |
+
+### Endpoint policies
+
+A group policy decides who may reach any endpoint in the group. An endpoint can carry its own structured policy to narrow that further, for example to the on-call group only, or to staff with an `example.com` address:
+
+```hcl
+        prod-db = {
+          # ... endpoint settings ...
+          sensitive = true
+          policy = {
+            identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+            additional_conditions = ["context.idc.user.email.address like \"*@example.com\""]
+            owner                 = "security-team"                                    # optional; defaults to the group's
+            justification         = "Only the on-call engineers may reach production data" # set both or neither
+          }
+        }
+```
+
+It renders to one `permit` whose conditions are all combined with **AND**: any of the endpoint's `identity_groups`, then each additional condition (each wrapped in parentheses, so an `||` inside one cannot widen the rest), then the device posture condition when the endpoint is `sensitive`. Verified Access evaluates the group policy and the endpoint policy and allows a request only if **both** allow it, so an endpoint policy can only narrow access, never widen it: a user must be in one of the group's identity groups **and** one of the endpoint's.
+
+```cedar
+permit(principal, action, resource)
+when {
+  (
+    context.idc.groups has "22222222-2222-2222-2222-222222222222"
+  ) &&
+  (context.idc.user.email.address like "*@example.com") &&
+  context.crowdstrike.assessment.overall >= 50
+};
+```
+
+Plan time checks: an endpoint sets at most one of `policy` and `raw_policy`; the policy must reference a trust provider (identity groups, `sensitive`, or a condition on the user or device context), as lint rule L2 requires; Identity Center groups are ids; and conditions are single expressions without semicolons or line breaks, so they cannot end the `permit` and start another statement. Anything the structured input cannot express still goes through `raw_policy`.
 
 ## Identity
 
 - **Identity group membership is the access control** ([ADR 0003](adr/0003-identity-center-groups-as-the-control.md)): Identity Center group ids, or OIDC group names, sorted, in the rendered Cedar. Access is managed where identities already are, so joiners and leavers flow through the identity provider. Groups are created per audience, not per tenant.
 - **The verified email condition is off by default** (`user_trust_provider.require_verified_email = false`). IAM Identity Center can report `email.verified = false` for every user (for example when users are provisioned from an external directory), and requiring it then denies everyone, including members of the permitted group. Turn it on only where the directory verifies emails; customers who rely on verified emails must opt in.
 - **No device posture by default:** anyone in the group can connect from any device with the client. Customers with Jamf, CrowdStrike or JumpCloud can add a `device_trust_provider` (`crowdstrike_min_score`, default 50, or `jamf_allowed_risk`, default `LOW` and `SECURE`, for sensitive endpoints); device context for TCP endpoints must be tested first (risk R1).
-- **OIDC:** the client secret is passed in `oidc_client_secret`; source it from a secret store, never from tfvars. Add `offline_access` to the scopes for the Connectivity Client.
+- **OIDC:** the client secret is passed in `oidc_client_secret`; source it from a secret store, never from tfvars. Add `offline_access` to the scopes for the Connectivity Client. It is stored in Terraform state like any argument, so encrypt and restrict the state.
+- **OIDC groups claim:** policies match group names in the `groups` claim of the user context (`context.<policy_reference_name>.groups`). Providers that put groups elsewhere are supported with `user_trust_provider.oidc.groups_claim`, for example `additional_user_context.groups` renders `context.okta.additional_user_context.groups.contains("admins")`. Check a log event with trust context (or the provider's user info response) for where the groups actually are before changing it: a wrong claim denies everyone. Claims that are not plain names (for example URL namespaced claims) need `raw_policy`.
+- **OIDC native application client:** the Connectivity Client uses the browser client (`client_id`, `scope`, `oidc_client_secret`) unless `native_client_id`, `native_scope` and `oidc_native_client_secret` configure a separate native application client, as some identity providers require. The `oidc_redirect_uris` output lists the sign-in redirect URI to register for each web application.
 - **Encryption:** `kms_key_arn` encrypts the trust providers, groups and endpoints with a customer managed key.
 
 The supported providers are listed in [trust providers](how-it-works.md#trust-providers).

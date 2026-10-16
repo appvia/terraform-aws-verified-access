@@ -14,9 +14,14 @@ locals {
     local.enable_alarm_topic ? aws_sns_topic.alarms[0].arn : var.alarms.sns_topic_arn
   )
 
-  ## The alarms on the log derived metrics; Verified Access publishes no metrics of its own
+  ## The actions notified on alarm and on recovery: the topic and any additional actions
+  alarm_actions = !local.enable_alarms ? [] : distinct(concat([local.alarm_topic_arn], var.alarms.additional_action_arns))
+
+  ## The alarms on the log derived metrics; Verified Access publishes no metrics of its own. Each alarm carries its
+  ## kind, the key alarms.disabled and alarms.overrides refer to
   access_alarms = !local.enable_alarms ? {} : {
     http-504 = {
+      kind                = "http-504"
       comparison_operator = "GreaterThanOrEqualToThreshold"
       description         = "HTTP endpoints are returning 504s: applications are slower than the 60 second Verified Access limit"
       dimensions          = {}
@@ -29,6 +34,7 @@ locals {
       treat_missing_data  = "notBreaching"
     }
     access-denied = {
+      kind                = "access-denied"
       comparison_operator = "GreaterThanOrEqualToThreshold"
       description         = "A spike in denied requests: a policy change has gone wrong, or someone is probing the endpoints"
       dimensions          = {}
@@ -41,6 +47,7 @@ locals {
       treat_missing_data  = "notBreaching"
     }
     logging-stopped = {
+      kind                = "logging-stopped"
       comparison_operator = "LessThanThreshold"
       description         = "No access logs received: the audit trail is broken, or nobody is using Verified Access"
       dimensions          = { LogGroupName = local.log_group_name }
@@ -53,6 +60,7 @@ locals {
       treat_missing_data  = "breaching"
     }
     no-access-allowed = {
+      kind                = "no-access-allowed"
       comparison_operator = "LessThanThreshold"
       description         = "Nobody has been allowed access: a possible outage nobody has reported"
       dimensions          = {}
@@ -70,6 +78,7 @@ locals {
   load_balancer_alarms = !local.enable_alarms ? {} : merge([
     for name, _ in local.load_balancer_endpoints : {
       format("%s-no-healthy-targets", name) = {
+        kind                = "no-healthy-targets"
         comparison_operator = "LessThanThreshold"
         description         = format("No healthy targets behind the central load balancer for %s: the service is unreachable", name)
         dimensions          = { LoadBalancer = aws_lb.current[0].arn_suffix, TargetGroup = aws_lb_target_group.current[name].arn_suffix }
@@ -82,6 +91,7 @@ locals {
         treat_missing_data  = "breaching"
       }
       format("%s-unhealthy-targets", name) = {
+        kind                = "unhealthy-targets"
         comparison_operator = "GreaterThanThreshold"
         description         = format("Unhealthy targets behind the central load balancer for %s: the service is degraded", name)
         dimensions          = { LoadBalancer = aws_lb.current[0].arn_suffix, TargetGroup = aws_lb_target_group.current[name].arn_suffix }
@@ -95,6 +105,15 @@ locals {
       }
     }
   ]...)
+
+  ## The alarms created: every alarm not disabled, with its overrides applied
+  alarms = !local.enable_alarms ? {} : {
+    for name, alarm in merge(local.access_alarms, local.load_balancer_alarms) : name => merge(alarm, {
+      evaluation_periods = coalesce(try(var.alarms.overrides[alarm.kind].evaluation_periods, null), alarm.evaluation_periods)
+      period             = coalesce(try(var.alarms.overrides[alarm.kind].period, null), alarm.period)
+      threshold          = coalesce(try(var.alarms.overrides[alarm.kind].threshold, null), alarm.threshold)
+    }) if !contains(var.alarms.disabled, alarm.kind)
+  }
 }
 
 ## Provision the key encrypting the alarm topic, when requested. CloudWatch and EventBridge cannot publish to a topic
@@ -104,7 +123,7 @@ resource "aws_kms_key" "alarms" {
 
   description         = format("Encrypts the Verified Access %s alarm topic", var.name)
   enable_key_rotation = true
-  tags                = merge(local.tags, { Name = format("verified-access-%s-alarms", var.name) })
+  tags                = merge(local.tags, { Name = format("%s-alarms", local.resource_name) })
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -132,7 +151,7 @@ resource "aws_kms_key" "alarms" {
 resource "aws_kms_alias" "alarms" {
   count = local.enable_alarm_kms_key ? 1 : 0
 
-  name          = format("alias/verified-access-%s-alarms", var.name)
+  name          = format("alias/%s-alarms", local.resource_name)
   target_key_id = aws_kms_key.alarms[0].key_id
 }
 
@@ -142,8 +161,8 @@ resource "aws_sns_topic" "alarms" {
   count = local.enable_alarm_topic ? 1 : 0
 
   kms_master_key_id = local.alarm_kms_key_arn
-  name              = format("verified-access-%s-alarms", var.name)
-  tags              = merge(local.tags, { Name = format("verified-access-%s-alarms", var.name) })
+  name              = format("%s-alarms", local.resource_name)
+  tags              = merge(local.tags, { Name = format("%s-alarms", local.resource_name) })
 }
 
 ## Permit CloudWatch alarms and EventBridge rules in this account to publish to the topic
@@ -178,17 +197,17 @@ resource "aws_sns_topic_subscription" "alarms" {
 
 ## Provision the alarms on the log derived metrics and the central load balancer
 resource "aws_cloudwatch_metric_alarm" "current" {
-  for_each = merge(local.access_alarms, local.load_balancer_alarms)
+  for_each = local.alarms
 
-  alarm_actions       = [local.alarm_topic_arn]
+  alarm_actions       = local.alarm_actions
   alarm_description   = each.value.description
-  alarm_name          = format("verified-access-%s-%s", var.name, each.key)
+  alarm_name          = format("%s-%s", local.resource_name, each.key)
   comparison_operator = each.value.comparison_operator
   dimensions          = each.value.dimensions
   evaluation_periods  = each.value.evaluation_periods
   metric_name         = each.value.metric_name
   namespace           = each.value.namespace
-  ok_actions          = [local.alarm_topic_arn]
+  ok_actions          = local.alarm_actions
   period              = each.value.period
   statistic           = each.value.statistic
   tags                = local.tags
@@ -202,7 +221,7 @@ resource "aws_cloudwatch_event_rule" "changed_outside_pipeline" {
   count = local.enable_change_alarm ? 1 : 0
 
   description = "Verified Access was changed by a principal other than the deployment pipeline"
-  name        = format("verified-access-%s-changed-outside-pipeline", var.name)
+  name        = format("%s-changed-outside-pipeline", local.resource_name)
   tags        = local.tags
 
   event_pattern = jsonencode({

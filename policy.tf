@@ -1,14 +1,18 @@
 locals {
-  ## The identity group conditions per group, sorted so the same input always renders the same policy.
-  ## IAM Identity Center keys groups by id (has); OIDC providers list group names (contains)
+  ## The identity group conditions per structured group (group/<name>) and endpoint (endpoint/<name>) policy, sorted
+  ## so the same input always renders the same policy. IAM Identity Center keys groups by id (has); OIDC providers
+  ## list group names (contains) in the configured groups claim
   identity_group_conditions = {
-    for name, group in var.groups : name => [
-      for id in sort(distinct(group.policy.identity_groups)) : (
+    for key, ids in merge(
+      { for name, group in var.groups : format("group/%s", name) => group.policy.identity_groups if group.policy != null },
+      { for name, endpoint in local.endpoints : format("endpoint/%s", name) => endpoint.policy.identity_groups if length(try(endpoint.policy.identity_groups, [])) > 0 },
+      ) : key => [
+      for id in sort(distinct(ids)) : (
         var.user_trust_provider.type == "iam-identity-center"
-        ? format("context.%s.groups has \"%s\"", local.user_policy_reference, id)
-        : format("context.%s.groups.contains(\"%s\")", local.user_policy_reference, id)
+        ? format("context.%s.%s has \"%s\"", local.user_policy_reference, local.user_groups_attribute, id)
+        : format("context.%s.%s.contains(\"%s\")", local.user_policy_reference, local.user_groups_attribute, id)
       )
-    ] if group.policy != null
+    ]
   }
 
   ## The verified email condition, only available from IAM Identity Center
@@ -53,7 +57,7 @@ locals {
         "when {",
         join(" &&\n", [
           for condition in concat(local.email_conditions, [
-            format("(\n    %s\n  )", join(" ||\n    ", local.identity_group_conditions[name]))
+            format("(\n    %s\n  )", join(" ||\n    ", local.identity_group_conditions[format("group/%s", name)]))
           ]) : format("  %s", condition)
         ]),
         "};",
@@ -61,8 +65,23 @@ locals {
     ))
   }
 
-  ## The endpoints needing their own policy: sensitive endpoints (device posture) and raw policies
-  policy_endpoints = { for name, endpoint in local.endpoints : name => endpoint if endpoint.raw_policy != null || endpoint.sensitive }
+  ## The endpoints needing their own policy: structured endpoint policies, sensitive endpoints (device posture) and raw
+  ## policies
+  policy_endpoints = {
+    for name, endpoint in local.endpoints : name => endpoint if endpoint.policy != null || endpoint.raw_policy != null || endpoint.sensitive
+  }
+
+  ## The conditions of each structured endpoint policy, combined with AND: its identity groups (any of), its additional
+  ## conditions (each parenthesised, so an || inside one cannot widen the others) and, when sensitive, device posture
+  endpoint_conditions = {
+    for name, endpoint in local.policy_endpoints : name => concat(
+      contains(keys(local.identity_group_conditions), format("endpoint/%s", name)) ? [
+        format("(\n    %s\n  )", join(" ||\n    ", local.identity_group_conditions[format("endpoint/%s", name)]))
+      ] : [],
+      [for condition in try(endpoint.policy.additional_conditions, []) : format("(%s)", trimspace(condition))],
+      endpoint.sensitive ? [local.device_condition] : [],
+    ) if endpoint.raw_policy == null
+  }
 
   ## The machine readable header of every endpoint policy
   endpoint_headers = {
@@ -72,8 +91,8 @@ locals {
       format("// name: %s", name),
       format("// source: %s", endpoint.raw_policy != null ? "raw" : "structured"),
       format("// sensitive: %t", endpoint.sensitive),
-      format("// owner: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.owner) : local.group_owners[endpoint.group]),
-      format("// justification: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.justification) : local.group_justifications[endpoint.group]),
+      format("// owner: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.owner) : try(trimspace(endpoint.policy.owner), local.group_owners[endpoint.group])),
+      format("// justification: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.justification) : try(trimspace(endpoint.policy.justification), local.group_justifications[endpoint.group])),
     ], local.context_headers)
   }
 
@@ -83,7 +102,7 @@ locals {
       endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.cedar) : join("\n", [
         "permit(principal, action, resource)",
         "when {",
-        format("  %s", local.device_condition),
+        join(" &&\n", [for condition in local.endpoint_conditions[name] : format("  %s", condition)]),
         "};",
       ])
     ))

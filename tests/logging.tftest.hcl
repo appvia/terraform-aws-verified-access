@@ -215,3 +215,41 @@ run "logging_disabled" {
     error_message = "No logging resources should be created when logging is disabled"
   }
 }
+
+run "existing_log_group" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = {
+        create_log_group = false
+        log_group_name   = "/central/verified-access"
+      }
+    }
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_log_group.access_logs) == 0
+    error_message = "No log group should be created when an existing one is used"
+  }
+
+  assert {
+    condition     = aws_verifiedaccess_instance_logging_configuration.current[0].access_logs[0].cloudwatch_logs[0].log_group == "/central/verified-access"
+    error_message = "The logs should be delivered to the existing log group"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.access) == 6 && alltrue([for filter in aws_cloudwatch_log_metric_filter.access : filter.log_group_name == "/central/verified-access"])
+    error_message = "The metric filters should be attached to the existing log group"
+  }
+
+  assert {
+    condition     = alltrue([for query in aws_cloudwatch_query_definition.access : tolist(query.log_group_names) == tolist(["/central/verified-access"])])
+    error_message = "The saved queries should query the existing log group"
+  }
+
+  assert {
+    condition     = output.access_log_group_name == "/central/verified-access"
+    error_message = "The existing log group should be exported"
+  }
+}

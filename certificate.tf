@@ -8,13 +8,13 @@ locals {
   )
 }
 
-## Request a wildcard public certificate for the http and https endpoints, validated by DNS records the caller
-## publishes in the domain's zone (output certificate_validation_records), wherever that zone is hosted
+## Request a wildcard public certificate for the http and https endpoints, validated by DNS records published in the
+## domain's zone: by the module with dns, or by the caller (output certificate_validation_records) wherever it is hosted
 resource "aws_acm_certificate" "current" {
   count = local.enable_certificate ? 1 : 0
 
   domain_name       = format("*.%s", var.certificate.domain_name)
-  tags              = merge(local.tags, { Name = format("verified-access-%s", var.name) })
+  tags              = merge(local.tags, { Name = local.resource_name })
   validation_method = "DNS"
 
   lifecycle {
@@ -22,9 +22,11 @@ resource "aws_acm_certificate" "current" {
   }
 }
 
-## Wait for the certificate to be issued, once the validation records are published
+## Wait for the certificate to be issued, once the validation records are published (by the module with dns, so it
+## waits for those records first)
 resource "aws_acm_certificate_validation" "current" {
   count = local.enable_certificate && try(var.certificate.wait_for_validation, false) ? 1 : 0
 
-  certificate_arn = aws_acm_certificate.current[0].arn
+  certificate_arn         = aws_acm_certificate.current[0].arn
+  validation_record_fqdns = local.enable_validation_records ? [for record in aws_route53_record.validation : record.fqdn] : null
 }

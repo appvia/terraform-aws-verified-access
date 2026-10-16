@@ -48,7 +48,7 @@ Use the ID, not the display name: the module rejects names with Identity Center,
 
 ### A domain, for web applications only
 
-Web applications are served on your own names, for example `tools.example.com`. You need a domain you control (`example.com`) and someone who can add DNS records to it. The module can request the certificate for you; you publish two kinds of DNS record by hand later.
+Web applications are served on your own names, for example `tools.example.com`. You need a domain you control (`example.com`) and someone who can add DNS records to it. The module can request the certificate for you; you publish two kinds of DNS record by hand later, or, if the domain is a Route 53 public hosted zone, the module publishes them for you ([Route 53](#let-the-module-publish-the-dns-records)).
 
 ### A deployment repository and pipeline
 
@@ -80,7 +80,8 @@ module "verified_access" {
   version = "0.1.0"
 
   # A short name for this deployment, used in every resource name (verified-access-production).
-  # With the hub topology it can be at most 16 characters.
+  # Resources are named <name_prefix>-<name>-...; set name_prefix to follow your own
+  # naming convention (default verified-access). With hub, prefix + name is at most 31 characters.
   name = "production"
 
   # The VPC and the dedicated subnets that hold the endpoints (and the central load balancer).
@@ -166,7 +167,7 @@ module "verified_access" {
 }
 ```
 
-Each endpoint with `targets` needs its own port, because each gets its own listener on the central load balancer. Before you merge, the module checks many rules (for example an empty `identity_groups`, two endpoints on the same port, or a web domain the certificate does not cover) and stops the plan with a clear message.
+Each endpoint with `targets` needs its own listener port, because each gets its own listener on the central load balancer; two services on the same port (for example two SSH hosts) set `listener_port` ([several hosts on one port](#several-hosts-on-one-port)). Before you merge, the module checks many rules (for example an empty `identity_groups`, two endpoints on the same port, or a web domain the certificate does not cover) and stops the plan with a clear message.
 
 Every option and its default is listed in the [README](../README.md) (inputs). The optional parts are summarised in the [options table](../README.md#options).
 
@@ -280,11 +281,13 @@ Get a code owner to review and approve, then merge. The pipeline runs apply on `
 
 ### 4. Publish the certificate validation records
 
+Skip this step and the next if the module publishes the records in Route 53 (`dns`, see [Route 53](#let-the-module-publish-the-dns-records)).
+
 AWS issues the certificate only after you prove you own the domain. Read the `certificate_validation_records` output from the apply (a map of record name to value) and create each one as a **CNAME** record in your domain's DNS. The certificate is issued a few minutes later. Details, including `certificate.wait_for_validation`, are in [operations](operations.md#publish-the-certificate-validation-records).
 
 ### 5. Point the application name at its endpoint
 
-For each web application, create a **CNAME** record from its `application_domain` (`tools.example.com`) to its endpoint domain, from the `endpoint_domains` output (`tools-web => ...`). SSH and other TCP applications need no DNS record: users connect to the endpoint domain itself.
+For each web application, create a **CNAME** record from its `application_domain` (`tools.example.com`) to its endpoint domain: the `application_domains` output maps each application domain to the name it must point at. SSH and other TCP applications need no DNS record: users connect to the endpoint domain itself.
 
 ### 6. Wait for the endpoints
 
@@ -292,7 +295,7 @@ If the apply finished, the endpoints are active. Allow about 17 minutes from the
 
 ### 7. Export the client configuration
 
-The Connectivity Client needs a configuration file from the Verified Access instance (output `instance_id`):
+The Connectivity Client needs a configuration file from the Verified Access instance (output `instance_id`; the `client_configuration_command` output is this command, ready to run):
 
 ```bash
 aws ec2 export-verified-access-instance-client-configuration \
@@ -372,8 +375,6 @@ To give one person access, add them to an existing group in IAM Identity Center 
 
 3. Web applications only: the name must be one level below the certificate's `domain_name`. After the apply, add the CNAME to its endpoint domain ([step 5](#5-point-the-application-name-at-its-endpoint)).
 
-The deployment name plus the endpoint name must be at most 28 characters (`production` + `reports-db` is 20).
-
 ### Change a target IP
 
 Edit `targets`:
@@ -407,6 +408,89 @@ Edit the `alarms` block. Thresholds are optional; leave out any you do not chang
 
 The alarms are described in [operations](operations.md#alarms).
 
+### Several hosts on one port
+
+Each endpoint with `targets` has its own listener on the central load balancer, and two listeners cannot share a port. To put several services on the same port behind it, for example SSH hosts that all listen on 22, give each endpoint a `listener_port`:
+
+```hcl
+        host-a-ssh = {
+          type          = "load-balancer"
+          port_ranges   = [{ from_port = 22, to_port = 22 }] # the port the host listens on
+          targets       = ["10.50.0.10"]
+          listener_port = 2201 # the port on the load balancer, and the port users connect to
+        }
+        host-b-ssh = {
+          type          = "load-balancer"
+          port_ranges   = [{ from_port = 22, to_port = 22 }]
+          targets       = ["10.50.0.11"]
+          listener_port = 2202
+        }
+```
+
+Two ports matter, and they go to different places:
+
+| Port | Set by | Used for |
+| --- | --- | --- |
+| **Listener port** | `listener_port` (defaults to the service port) | The listener on the central load balancer, the port the Verified Access endpoint is configured with, and therefore the port users connect to: `ssh -p 2201 ec2-user@<host-a-ssh endpoint domain>` |
+| **Service port** | `port_ranges` (TCP) or `port` (HTTP) | The target group: the port the load balancer sends to on the host, and the port the host's security group must allow from the endpoint subnets |
+
+For web applications users always browse on 443, so `listener_port` only changes the hop between Verified Access and the load balancer. A host that listens on a different port from the rest of its endpoint's targets can use `target_details = [{ ip = "10.50.0.12", port = 2222 }]` instead of `targets`. With `topology = "hub"` one load balancer holds at most 50 listeners, and its security group needs one inbound rule per listener and subnet range and one outbound rule per target address and port; the plan stops with a clear message before the default quota of 60 rules is exceeded.
+
+### Let the module publish the DNS records
+
+If the domain is a Route 53 public hosted zone in the same account, give the module the zone and it publishes the certificate validation records and a CNAME from each web application's `application_domain` to its endpoint domain. With `wait_for_validation`, the apply waits until the certificate is issued:
+
+```hcl
+  certificate = {
+    domain_name         = "example.com"
+    wait_for_validation = true
+  }
+
+  dns = {
+    zone_id = "Z0123456789ABCDEFGHIJ" # Route 53 console, Hosted zones, the zone's Hosted zone ID
+  }
+```
+
+`dns.create_validation_records = false` or `dns.create_application_records = false` leave either kind of record to you. The pipeline role then also needs `route53:ChangeResourceRecordSets`, `route53:GetChange`, `route53:GetHostedZone` and `route53:ListResourceRecordSets` on that zone.
+
+### Tag for chargeback
+
+`tags` applies to everything the module creates. To charge a tenant or cost centre for its applications, add `tags` to a group (applied to the group and all of its endpoints) or to an endpoint (overriding the group's for that endpoint). They are applied to the endpoint, its security group, and its target group and listener on the central load balancer:
+
+```hcl
+  groups = {
+    tenant-a = {
+      tags = { CostCentre = "tenant-a" }
+      # ... policy ...
+      endpoints = {
+        reports-db = {
+          # ... endpoint settings ...
+          tags = { CostCentre = "tenant-a-reporting" } # overrides the group's for this endpoint
+        }
+      }
+    }
+  }
+```
+
+Activate the tag keys as cost allocation tags in the billing console to see them in Cost Explorer.
+
+### Send alarms to PagerDuty or Slack
+
+Alarms go to one SNS topic (the module's, or yours with `alarms.sns_topic_arn`). To page an on-call tool as well, subscribe it to an SNS topic of its own and add that topic to `alarms.additional_action_arns`: every alarm notifies it when it fires and when it recovers.
+
+- **PagerDuty:** create an Amazon CloudWatch integration on the PagerDuty service, and subscribe its integration URL (HTTPS) to an SNS topic.
+- **Slack or Microsoft Teams:** configure AWS Chatbot (Amazon Q Developer in chat applications) for the channel, with an SNS topic.
+
+```hcl
+  alarms = {
+    email_addresses        = ["platform-team@example.com"]
+    additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty", "arn:aws:sns:eu-west-2:111111111111:slack-alerts"]
+    disabled               = ["no-access-allowed"] # not useful in a quiet environment
+  }
+```
+
+The change-outside-the-pipeline alarm (A7) is an EventBridge rule, which notifies only the main topic. Turning alarms off or changing their periods is in [operations](operations.md#customising-the-alarms).
+
 ### Turn options on or off
 
 Set an option to turn it on; remove it (or set it to `null`) to turn it off.
@@ -421,6 +505,9 @@ Set an option to turn it on; remove it (or set it to `null`) to turn it off.
 | Metric stream | `metric_stream = { firehose_arn = "...", role_arn = "..." }` | Needs a Firehose delivery stream you own |
 | WAF | `waf = { create = true }`, or `waf = { web_acl_arn = "..." }` for your own web ACL | Web applications only |
 | Log archive copy | `access_logs.s3 = { bucket_name = "log-archive-verified-access", bucket_owner = "111111111111" }` | The bucket is owned elsewhere |
+| An existing log group | `access_logs.cloudwatch = { create_log_group = false, log_group_name = "/central/verified-access" }` | Its retention and encryption are owned elsewhere |
+| Route 53 records | `dns = { zone_id = "Z0123456789ABCDEFGHIJ" }` | Certificate validation records and application CNAMEs |
+| FIPS endpoints | `fips_enabled = true` | US, Canada and GovCloud regions only; changing it **replaces** the instance and everything in it |
 
 ## Moving from bastions and jump boxes
 
@@ -462,5 +549,5 @@ The other gaps (device posture for TCP, HTTP requests over 60 seconds, protocols
 ## Tearing down
 
 1. In the deployment repository, run the destroy workflow. Two cases need a change first, described in [operations](operations.md#tear-down): if the pipeline role may not delete ACM certificates, and if `load_balancer.enable_deletion_protection` is on.
-2. Remove the tenant side: the security group rules allowing the endpoint subnets, and the application DNS records (the CNAMEs and the certificate validation records).
+2. Remove the tenant side: the security group rules allowing the endpoint subnets, and the application DNS records (the CNAMEs and the certificate validation records), unless the module published them with `dns`, in which case the destroy removes them.
 3. Delete the Connectivity Client configuration from users' machines (or withdraw it from MDM).

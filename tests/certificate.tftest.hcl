@@ -161,3 +161,83 @@ run "no_certificate" {
     error_message = "The certificate outputs should be empty without a certificate"
   }
 }
+
+run "route53_records" {
+  command = apply
+
+  variables {
+    certificate = {
+      domain_name         = "example.com"
+      wait_for_validation = true
+    }
+    dns = {
+      zone_id = "Z0123456789ABCDEFGHIJ"
+      ttl     = 60
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_route53_record.validation["*.example.com"].name == "_0123456789abcdef.example.com.",
+      aws_route53_record.validation["*.example.com"].type == "CNAME",
+      aws_route53_record.validation["*.example.com"].records == toset(["_fedcba9876543210.acm-validations.aws."]),
+      aws_route53_record.validation["*.example.com"].zone_id == "Z0123456789ABCDEFGHIJ",
+      aws_route53_record.validation["*.example.com"].ttl == 60,
+    ])
+    error_message = "The certificate validation record should be published in the hosted zone"
+  }
+
+  assert {
+    condition     = aws_acm_certificate_validation.current[0].validation_record_fqdns == toset([aws_route53_record.validation["*.example.com"].fqdn])
+    error_message = "The module should wait for validation through the records it publishes"
+  }
+
+  assert {
+    condition     = toset(keys(aws_route53_record.application)) == toset(["app-web", "own-certificate"])
+    error_message = "An application record should be published for each http and https endpoint, not tcp endpoints"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_route53_record.application["app-web"].name == "app.example.com",
+      aws_route53_record.application["app-web"].type == "CNAME",
+      aws_route53_record.application["app-web"].records == toset([output.endpoint_domains["app-web"]]),
+    ])
+    error_message = "The application domain should be a CNAME of the endpoint domain"
+  }
+
+  assert {
+    condition     = output.application_domains["app.example.com"] == output.endpoint_domains["app-web"] && length(output.application_domains) == 2
+    error_message = "The application domains should be exported with their CNAME target"
+  }
+}
+
+run "route53_application_records_only" {
+  command = plan
+
+  variables {
+    dns = {
+      zone_id                   = "Z0123456789ABCDEFGHIJ"
+      create_validation_records = false
+    }
+  }
+
+  assert {
+    condition     = length(aws_route53_record.validation) == 0 && length(aws_route53_record.application) == 2
+    error_message = "The validation records should be optional"
+  }
+}
+
+run "route53_disabled" {
+  command = plan
+
+  assert {
+    condition     = length(aws_route53_record.validation) == 0 && length(aws_route53_record.application) == 0
+    error_message = "No records should be published without dns"
+  }
+
+  assert {
+    condition     = aws_acm_certificate_validation.current == []
+    error_message = "No validation should be waited for by default"
+  }
+}

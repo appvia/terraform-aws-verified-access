@@ -4,7 +4,7 @@ locals {
   ## Indicates the metric stream is created
   enable_metric_stream = var.metric_stream != null
   ## The name of the dashboard
-  dashboard_name = format("verified-access-%s", var.name)
+  dashboard_name = local.resource_name
 }
 
 ## Provision the CloudWatch dashboard answering is it up, what is failing and who is connecting now: access decisions,
@@ -104,7 +104,7 @@ resource "aws_cloudwatch_metric_stream" "current" {
   count = local.enable_metric_stream ? 1 : 0
 
   firehose_arn  = var.metric_stream.firehose_arn
-  name          = format("verified-access-%s", var.name)
+  name          = local.resource_name
   output_format = var.metric_stream.output_format
   role_arn      = var.metric_stream.role_arn
   tags          = local.tags

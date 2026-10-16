@@ -23,7 +23,7 @@ New to the module? Start with [getting started](getting-started.md).
 | **Deployment** | One repository per customer, from `appvia/terraform-aws-pipeline-template` | Yes: accounts, VPC, the pipeline role, the policy gate, DNS records |
 | **Values** | `values/<environment>.tfvars` in the deployment repository | Yes: who can reach what, and which module options are on |
 
-Components every hub-and-spoke customer needs are module options, so a deployment is one module block of values and toggles (self-service). Only what is specific to one customer (DNS hosting, the pipeline, the network itself) stays in the deployment repository. The module consumes an existing network (VPC, dedicated subnets and, for `hub`, a transit gateway) and never creates VPCs, subnets or DNS records.
+Components every hub-and-spoke customer needs are module options, so a deployment is one module block of values and toggles (self-service). Only what is specific to one customer (DNS hosting, the pipeline, the network itself) stays in the deployment repository. The module consumes an existing network (VPC, dedicated subnets and, for `hub`, a transit gateway) and never creates VPCs or subnets; it creates DNS records only in a Route 53 hosted zone you give it (`dns`).
 
 ## Where everything lives
 
@@ -95,8 +95,10 @@ The NLB is shared: one NLB, one listener port per application, up to 50 listener
 
 Rules worth knowing (all checked at plan time):
 
-- Each endpoint with `targets` needs its own port (one listener each, up to 50 per NLB); tcp endpoints use a single port range with `from_port = to_port`, which becomes the listener port; http and https endpoints use `port`.
-- With `hub`, the deployment `name` is at most 16 characters (load balancer `verified-access-<name>`), and the deployment `name` plus each endpoint name with `targets` at most 28 characters (target group `va-<name>-<endpoint>`, at most 32). Including the deployment name keeps them unique, so several deployments can share an account and region. An endpoint with `targets` cannot be named `nlb`.
+- Each endpoint with `targets` needs its own listener port (one listener each, up to 50 per NLB). tcp endpoints use a single port range with `from_port = to_port` and http and https endpoints use `port`: that is the **service port**, which the target group sends to. The **listener port** defaults to the service port; set `listener_port` to put several services on the same service port (for example SSH hosts on 22) behind the NLB. The listener port is also the port the endpoint is configured with, so it is the port TCP users connect to on the endpoint domain ([several hosts on one port](getting-started.md#several-hosts-on-one-port)).
+- `target_details` replaces `targets` when a target needs its own port or availability zone (`all`, the default, for addresses across the transit gateway; a zone name for an address inside the hub VPC). `health_check` (TCP on the traffic port by default, or HTTP/HTTPS with a path), `deregistration_delay` (300 seconds), `preserve_client_ip` (off: targets across a transit gateway would reply directly to the endpoint, bypassing the NLB) and `proxy_protocol_v2` (off) tune each target group; `load_balancer.cross_zone_enabled` (on) the NLB.
+- The NLB security group needs one inbound rule per listener and subnet range, and one outbound rule per target address and port (a numeric health check port adds one per target). The default quota is 60 rules per direction, so with three subnets about 20 listeners fit; the plan stops before the quota is exceeded. Raise the quota and `load_balancer.max_security_group_rules` together, or target the tenants' own load balancers rather than individual hosts.
+- **Naming:** every resource is named `<name_prefix>-<name>-…` (default prefix `verified-access`, for example load balancer `verified-access-production`), so a customer's naming convention is one input, for example `name_prefix = "prod-euw2-va"`; scope pipeline roles to `<name_prefix>-*`. With `hub`, the prefix plus `name` is at most 31 characters (load balancer names are at most 32). Target groups are named `<name_prefix>-<hash>` (a hash of the deployment and endpoint names, with the readable name in the `Name` tag), so endpoint names have no length rule and several deployments can share an account and region. An endpoint with `targets` cannot be named `nlb`.
 - Targets must be IPv4 addresses known at plan time (literal addresses: a fixed host address, or ideally the fixed private IPs of the tenant's own internal NLB, so tenant changes do not need a platform change) and must be outside the hub VPC.
 - Endpoints with `targets` cannot override `subnet_ids`; they use the module's `subnet_ids`, which hold the central load balancer.
 - `targets` without `topology = "hub"` are rejected. An endpoint can still bring its own load balancer with `load_balancer_arn` instead of `targets` (not both).
@@ -269,7 +271,7 @@ sequenceDiagram
   W-->>B: Page
 ```
 
-- Needs a **public ACM certificate** for the application domain in the network account, and a CNAME from the application domain to the endpoint domain in whichever DNS the customer runs. The module can request a DNS validated wildcard certificate (`certificate = { domain_name = "example.com" }` covers `*.example.com`, so application domains must be one level below it, for example `app.example.com`) and exports the validation records (`certificate_validation_records`); the DNS records themselves stay with the customer's DNS, wherever it is hosted. An endpoint can still bring its own `domain_certificate_arn`.
+- Needs a **public ACM certificate** for the application domain in the network account, and a CNAME from the application domain to the endpoint domain in whichever DNS the customer runs. The module can request a DNS validated wildcard certificate (`certificate = { domain_name = "example.com" }` covers `*.example.com`, so application domains must be one level below it, for example `app.example.com`) and exports the validation records (`certificate_validation_records`); the DNS records stay with the customer's DNS, wherever it is hosted, unless it is a Route 53 public hosted zone the module may publish them in (`dns = { zone_id = "..." }`). An endpoint can still bring its own `domain_certificate_arn`.
 - HTTP endpoints work through the central **NLB** (a TCP listener); an ALB is not needed.
 - Proven: a page served from a private instance in a spoke VPC, with no public address.
 
@@ -293,7 +295,7 @@ A user who signs in but is not in a permitted group is denied by the Cedar polic
 | Provider | Supported by the module | Notes |
 | --- | --- | --- |
 | IAM Identity Center | Yes (organisation instance, same region) | Proven in testing; the recommended choice where Identity Center is already the workforce directory |
-| OIDC (Okta, Entra ID, Google and others) | Yes | Group names in the `groups` claim; add the `offline_access` scope for the Connectivity Client |
+| OIDC (Okta, Entra ID, Google and others) | Yes | Group names in the `groups` claim, or another claim with `oidc.groups_claim` (a dotted path reaches a nested claim); add the `offline_access` scope for the Connectivity Client. The Connectivity Client can use a separate native application client (`native_client_id`, `native_scope`, `oidc_native_client_secret`) |
 | Device: Jamf, CrowdStrike, JumpCloud | Yes, optional; `sensitive` endpoints require it (fail closed) | Untested. Device context for **TCP** endpoints is unconfirmed by AWS documentation (risk R1): test with the provider before marking TCP endpoints sensitive |
 
 Identity group membership is the control; see [identity](security.md#identity) for the verified email condition.
@@ -308,7 +310,7 @@ Default quotas per account and region (all adjustable): 5 instances, 10 groups, 
 | 25 | 2 | 50 | At the limit: raise the quota first |
 | 50 | 3 | 150 | Raise the endpoint quota; add a second NLB (listeners) |
 
-**Grouping strategy:** a group is a set of endpoints sharing one policy, so create groups per **audience** (for example platform engineers, tenant developers, support), not per tenant. Tenant specific rules go in endpoint policies. This keeps well within the 10 group limit as tenants grow.
+**Grouping strategy:** a group is a set of endpoints sharing one policy, so create groups per **audience** (for example platform engineers, tenant developers, support), not per tenant. Tenant specific rules go in endpoint policies (`endpoints.<name>.policy`, which narrows the group's audience to some of its identity groups or adds conditions; Verified Access requires both the group and the endpoint policy to allow). This keeps well within the 10 group limit as tenants grow.
 
 ## Limitations
 
@@ -326,6 +328,7 @@ These are properties of the AWS service; the module cannot change them.
 | **A new endpoint takes about 17 minutes** to become active | Onboarding an application is slow to apply | Batch onboarding; the pipeline waits |
 | **HTTP requests longer than 60 seconds** return 504 | Long running web requests fail | Change the application, or keep it on another route |
 | **TCP and HTTP only** (no UDP or other protocols) | Some protocols are not supported | Another route |
+| **FIPS endpoints in US, Canada and GovCloud (US) regions only** | `fips_enabled` elsewhere is rejected by AWS (the module warns); changing it replaces the instance | Choose the region first |
 | **TCP endpoint names resolve to IPv6 only** and work only while the Connectivity Client is connected | "Could not resolve hostname" when the client is disconnected | See [troubleshooting](operations.md#troubleshooting) |
 | **A denied TCP connection looks like a timeout** to the user | Users cannot tell denied from broken | Check the access logs (`denied-requests` query) |
 | **Priced per application** (about $146 a month per TCP endpoint, $197 per HTTP application) | Cost grows with the number of applications, unlike one shared bastion | Keep endpoints to what is needed; several ports of one service on one TCP endpoint ([cost](cost.md)) |
@@ -345,6 +348,36 @@ These follow from placing Verified Access centrally in a hub-and-spoke network.
 | **HTTPS needs a public certificate and DNS** for each domain, in the network account, validated wherever the domain is hosted | The DNS owner is involved once per domain | One wildcard certificate per environment domain (module option `certificate`, which exports the validation records) |
 | **Access depends on the identity provider and Verified Access** | If either is unavailable, nobody gets in | Keep a documented break glass route (for example Systems Manager Session Manager with approval) |
 | **Idle TCP sessions drop** after the load balancer idle timeout (350 seconds) | SSH sessions disconnect when idle | SSH keep alives (`ServerAliveInterval 60`) or a longer listener idle timeout (`load_balancer.tcp_idle_timeout_seconds`) |
+
+### Not supported by AWS
+
+Requests that come up but that Verified Access (or the AWS API and provider) cannot do, so the module cannot offer them:
+
+- **UDP or any other non-TCP protocol** (DNS, syslog, QUIC, multicast).
+- **Time-of-day or schedule conditions in Cedar**: the request context carries no time, so "only during office hours" cannot be written as a policy.
+- **Private CA certificates** for application domains: the `domain_certificate_arn` must be a public ACM certificate.
+- **More than one user trust provider per instance**: one identity provider per instance; a second directory needs a second instance (a second deployment of the module).
+- **The Connectivity Client configuration as a Terraform resource**: it is only exported with `aws ec2 export-verified-access-instance-client-configuration` (output `client_configuration_command`).
+- **Several regions in one module call**: an instance is regional; call the module once per region with a provider for each.
+- **Instance ID targets on the NLB across a transit gateway**: targets in another VPC must be IP targets (availability zone `all`).
+- **Keeping the OIDC client secret out of Terraform state**: the trust provider takes the secret as an argument, so it is stored in state; encrypt and restrict the state.
+
+### Roadmap
+
+Not built yet, in no particular order. Ask if one matters to you:
+
+- Several device trust providers on one instance.
+- Groups shared to other accounts with AWS RAM.
+- Using an existing Verified Access instance instead of creating one.
+- More than 50 load balanced applications by sharding endpoints across several NLBs.
+- Endpoint security group egress to managed prefix lists, and IPv6.
+- NLB access logs and TLS listeners.
+- Custom WAF rules and WAF logging on the created web ACL.
+- Certificate subject alternative names and application domains deeper than one level below the certificate domain.
+- Structured helpers for break glass access, email domain and client IP conditions (today: `additional_conditions` or `raw_policy`).
+- Metric stream filters by metric name.
+- A module built ALB for HTTP applications.
+- Configurable resource timeouts.
 
 ### Not yet proven
 

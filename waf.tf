@@ -28,9 +28,9 @@ resource "aws_wafv2_web_acl" "current" {
   count = local.enable_web_acl ? 1 : 0
 
   description = format("Verified Access %s", var.name)
-  name        = format("verified-access-%s", var.name)
+  name        = local.resource_name
   scope       = "REGIONAL"
-  tags        = merge(local.tags, { Name = format("verified-access-%s", var.name) })
+  tags        = merge(local.tags, { Name = local.resource_name })
 
   default_action {
     allow {}
@@ -56,7 +56,7 @@ resource "aws_wafv2_web_acl" "current" {
 
       visibility_config {
         cloudwatch_metrics_enabled = true
-        metric_name                = format("verified-access-%s-%s", var.name, rule.key)
+        metric_name                = format("%s-%s", local.resource_name, rule.key)
         sampled_requests_enabled   = true
       }
     }
@@ -64,7 +64,7 @@ resource "aws_wafv2_web_acl" "current" {
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = format("verified-access-%s", var.name)
+    metric_name                = local.resource_name
     sampled_requests_enabled   = true
   }
 }

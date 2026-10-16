@@ -49,6 +49,30 @@ Module option `alarms`, with starting thresholds. Every customer needs the same 
 
 Thresholds must be at least 1, and the hour thresholds at most 168 (seven days). Tune after real usage: A5 and A6 fire in quiet environments (no traffic means no logs), which is expected in a demo.
 
+### Customising the alarms
+
+Every alarm has a key: `http-504` (A3), `access-denied` (A4), `logging-stopped` (A5), `no-access-allowed` (A6), and per endpoint with targets `no-healthy-targets` (A1) and `unhealthy-targets` (A2). The keys are checked at plan time.
+
+| Setting | What it does | Example |
+| --- | --- | --- |
+| `alarms.disabled` | Does not create the alarms with these keys | `["no-access-allowed"]` in a quiet environment |
+| `alarms.overrides` | Sets the `period` (seconds: 10, 30 or a multiple of 60), `evaluation_periods` and `threshold` of the alarms with a key; wins over `thresholds`, and period times evaluation periods must be at most seven days | `{ no-healthy-targets = { evaluation_periods = 5 } }` |
+| `alarms.additional_action_arns` | Also notifies these ARNs on alarm and on recovery, for example an SNS topic integrated with PagerDuty or AWS Chatbot | `["arn:aws:sns:eu-west-2:111111111111:pagerduty"]` |
+
+```hcl
+  alarms = {
+    email_addresses        = ["platform-team@example.com"]
+    additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty"]
+    disabled               = ["no-access-allowed"]
+    overrides = {
+      http-504           = { period = 60, evaluation_periods = 5, threshold = 3 } # 3 or more per minute, for 5 minutes
+      no-healthy-targets = { evaluation_periods = 5 }                              # ride out target restarts
+    }
+  }
+```
+
+The defaults (period and evaluation periods) are those in the table above. A7 is an EventBridge rule rather than a CloudWatch alarm, so it is not affected by these settings and notifies only the alarm topic.
+
 ### Dashboard
 
 Module option `dashboard`. `dashboard = {}` creates the CloudWatch dashboard `verified-access-<name>` (output `dashboard_name`; requires `access_logs.cloudwatch` with metric filters): access decisions (`AccessAllowed`, `AccessDenied`), HTTP errors (`Http504`, `Http5xx`), healthy targets per endpoint on the central NLB (`topology = "hub"`) and a Logs Insights table of who is connecting. `dashboard.period` sets the metric period (default 300 seconds; 60, 300, 900, 3600, 21600 or 86400).
@@ -89,7 +113,7 @@ Revoking access is the same change in reverse, with the same delay.
 
 1. The tenant allows the endpoint subnets on the application's port in its security group.
 2. Add an endpoint under the right group (`type = "load-balancer"`; TCP with a single `port_ranges` entry, or HTTP with `port` and `application_domain`) with the application's private IPs in `targets` (`topology = "hub"`). Each application needs its own port on the central load balancer; the module creates the listener, target group and security group rules.
-3. HTTPS only: make sure the certificate covers the application domain (the module `certificate` covers one level below its `domain_name`), then add a CNAME from the application domain to the endpoint domain (output `endpoint_domains`).
+3. HTTPS only: make sure the certificate covers the application domain (the module `certificate` covers one level below its `domain_name`), then add a CNAME from the application domain to the endpoint domain (output `application_domains`), unless the module publishes it with `dns`.
 4. Merge. **A new endpoint takes about 17 minutes** to become active; the pipeline waits for it.
 
 ### Connect over TCP (SSH, RDP, databases)
@@ -107,7 +131,7 @@ Revoking access is the same change in reverse, with the same delay.
 
 ### Publish the certificate validation records
 
-With the module `certificate`, read the `certificate_validation_records` output after the first apply and create each record (name => value, type CNAME) in the domain's DNS. The certificate is issued a few minutes later. With `certificate.wait_for_validation = true` the apply waits for issue before creating the endpoints that use it, so publish the records first (or apply once without waiting).
+With `dns` (a Route 53 public hosted zone), the module publishes them, and with `wait_for_validation` waits for them; nothing to do by hand. Otherwise, with the module `certificate`, read the `certificate_validation_records` output after the first apply and create each record (name => value, type CNAME) in the domain's DNS. The certificate is issued a few minutes later. With `certificate.wait_for_validation = true` the apply waits for issue before creating the endpoints that use it, so publish the records first (or apply once without waiting).
 
 ### Tear down
 

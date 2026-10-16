@@ -25,7 +25,7 @@ An **internal NLB in the network account**, in the same subnets as the endpoints
 - About $20 a month, shared by all applications; up to 50 listeners per NLB.
 - Each application needs its own listener port on the NLB.
 - Tenant IP addresses are configuration (`targets`, known at plan time); in production, target the fixed private IPs of the tenant's own internal NLB so tenant changes do not need a platform change.
-- Target group names (`va-<name>-<endpoint>`, at most 32 characters) limit the deployment name plus the endpoint name to 28 characters; including the deployment name keeps them unique when several deployments share an account and region.
+- Target group names are limited to 32 characters and unique per account and region, so they are `verified-access-<hash of name/endpoint>`, with the readable name in the `Name` tag: unique across deployments, no length rule on endpoint names, and within the `verified-access-*` prefix pipeline roles are scoped to.
 - Health checks cross the transit gateway, which gives per application health alarms for free.
 
 ## Alternatives rejected

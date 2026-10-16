@@ -10,10 +10,13 @@ locals {
     "Environment" = "Testing"
     "GitRepo"     = "https://github.com/appvia/terraform-aws-verified-access"
   }
-  ## The spoke subnet holding the target (the first private subnet of 10.50.0.0/21)
+  ## The spoke subnet holding the targets (the first private subnet of 10.50.0.0/21)
   target_subnet_cidr = "10.50.0.0/24"
-  ## The fixed private address of the target; load balancer targets must be known at plan time
-  target_private_ip = cidrhost(local.target_subnet_cidr, 10)
+  ## The fixed private addresses of the two SSH targets; load balancer targets must be known at plan time
+  target_private_ips = {
+    a = cidrhost(local.target_subnet_cidr, 10)
+    b = cidrhost(local.target_subnet_cidr, 11)
+  }
 }
 
 ## Find the latest Amazon Linux 2023 image for the demonstration target
@@ -87,13 +90,16 @@ resource "aws_security_group" "target" {
   }
 }
 
-## Provision a private Linux host in the spoke VPC to reach over SSH, in the private subnet holding its fixed address
+## Provision two private Linux hosts in the spoke VPC to reach over SSH, in the private subnet holding their fixed
+## addresses; both listen on 22
 resource "aws_instance" "target" {
+  for_each = local.target_private_ips
+
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = "t3.micro"
-  private_ip             = local.target_private_ip
+  private_ip             = each.value
   subnet_id              = one([for id, cidr in module.spoke.private_subnet_cidr_by_id : id if cidr == local.target_subnet_cidr])
-  tags                   = merge(local.tags, { Name = "verified-access-hub-target" })
+  tags                   = merge(local.tags, { Name = format("verified-access-hub-target-%s", each.key) })
   vpc_security_group_ids = [aws_security_group.target.id]
 
   metadata_options {
@@ -138,6 +144,12 @@ module "verified_access" {
   #   domain_name = "example.com"
   # }
 
+  ## Uncomment, with the certificate, to let the module publish the certificate validation records and the
+  ## application CNAMEs in a Route 53 public hosted zone for example.com
+  # dns = {
+  #   zone_id = "Z0123456789ABCDEFGHIJ"
+  # }
+
   groups = {
     engineers = {
       description = "Engineers permitted to reach the demonstration target"
@@ -146,11 +158,20 @@ module "verified_access" {
         owner           = "platform-team"
         justification   = "Engineers administer the demonstration target over SSH"
       }
+      ## Both hosts listen on 22, so each has its own listener port on the central load balancer, which is also the
+      ## port users connect to: ssh -p 2201 ec2-user@<target-a-ssh endpoint domain>
       endpoints = {
-        target-ssh = {
-          type        = "load-balancer"
-          port_ranges = [{ from_port = 22, to_port = 22 }]
-          targets     = [local.target_private_ip]
+        target-a-ssh = {
+          type          = "load-balancer"
+          port_ranges   = [{ from_port = 22, to_port = 22 }]
+          targets       = [local.target_private_ips["a"]]
+          listener_port = 2201
+        }
+        target-b-ssh = {
+          type          = "load-balancer"
+          port_ranges   = [{ from_port = 22, to_port = 22 }]
+          targets       = [local.target_private_ips["b"]]
+          listener_port = 2202
         }
       }
     }

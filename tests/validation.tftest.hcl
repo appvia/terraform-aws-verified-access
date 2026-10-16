@@ -1,4 +1,4 @@
-## Input validation tests: every rule (V1-V44) has a run proving invalid input is rejected at plan time.
+## Input validation tests: every rule (V1-V64) has a run proving invalid input is rejected at plan time.
 ## Each invalid run breaks exactly one rule against the valid baseline below.
 
 mock_provider "aws" {
@@ -997,32 +997,6 @@ run "invalid_targets_duplicate_ports" {
   expect_failures = [var.groups]
 }
 
-run "invalid_targets_endpoint_name_too_long" {
-  command = plan
-
-  variables {
-    topology = "hub"
-    groups = {
-      platform-engineers = {
-        policy = {
-          identity_groups = ["11111111-1111-1111-1111-111111111111"]
-          owner           = "platform-team"
-          justification   = "Platform engineers operate the demo tenant hosts"
-        }
-        endpoints = {
-          a-very-long-endpoint-name-x = {
-            type        = "load-balancer"
-            port_ranges = [{ from_port = 22, to_port = 22 }]
-            targets     = ["10.50.0.10"]
-          }
-        }
-      }
-    }
-  }
-
-  expect_failures = [var.groups]
-}
-
 run "invalid_targets_endpoint_named_nlb" {
   command = plan
 
@@ -1334,4 +1308,763 @@ run "invalid_waf_global_web_acl" {
   }
 
   expect_failures = [var.waf]
+}
+
+## V46-V50: endpoint policies
+
+run "valid_endpoint_policy_with_context_condition" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              additional_conditions = ["context.idc.user.email.address like \"*@example.com\""]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = strcontains(output.rendered_policies["endpoint/demo-ssh"], "(context.idc.user.email.address like \"*@example.com\")")
+    error_message = "An endpoint policy of additional conditions on the user context should be rendered"
+  }
+}
+
+run "invalid_endpoint_policy_and_raw_policy" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["11111111-1111-1111-1111-111111111111"]
+            }
+            raw_policy = {
+              cedar         = "permit(principal, action, resource) when { context.idc.groups has \"11111111-1111-1111-1111-111111111111\" };"
+              owner         = "security-team"
+              justification = "Both a structured and a raw policy are set"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_without_trust_context" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              additional_conditions = ["context.http_request.http_method == \"GET\""]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_identity_center_group_name" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["Engineers"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_owner_without_justification" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["11111111-1111-1111-1111-111111111111"]
+              owner           = "security-team"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_short_justification" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["11111111-1111-1111-1111-111111111111"]
+              owner           = "security-team"
+              justification   = "Too short"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_semicolon" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["11111111-1111-1111-1111-111111111111"]
+              additional_conditions = ["true }; permit(principal, action, resource) when { true"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+## V51-V52: OIDC groups claim and native application client
+
+run "invalid_oidc_groups_claim" {
+  command = plan
+
+  variables {
+    oidc_client_secret = "not-a-real-secret"
+    user_trust_provider = {
+      type = "oidc"
+      oidc = {
+        issuer                 = "https://example.okta.com"
+        authorization_endpoint = "https://example.okta.com/oauth2/v1/authorize"
+        token_endpoint         = "https://example.okta.com/oauth2/v1/token"
+        user_info_endpoint     = "https://example.okta.com/oauth2/v1/userinfo"
+        client_id              = "client"
+        groups_claim           = "https://example.com/groups"
+      }
+    }
+  }
+
+  expect_failures = [var.user_trust_provider]
+}
+
+run "invalid_oidc_native_client_without_signing_key" {
+  command = plan
+
+  variables {
+    oidc_client_secret = "not-a-real-secret"
+    user_trust_provider = {
+      type = "oidc"
+      oidc = {
+        issuer                 = "https://example.okta.com"
+        authorization_endpoint = "https://example.okta.com/oauth2/v1/authorize"
+        token_endpoint         = "https://example.okta.com/oauth2/v1/token"
+        user_info_endpoint     = "https://example.okta.com/oauth2/v1/userinfo"
+        client_id              = "client"
+        native_client_id       = "native"
+      }
+    }
+  }
+
+  expect_failures = [var.user_trust_provider]
+}
+
+run "invalid_oidc_native_secret_without_native_application" {
+  command = plan
+
+  variables {
+    oidc_native_client_secret = "not-a-real-secret"
+  }
+
+  expect_failures = [var.oidc_native_client_secret]
+}
+
+run "invalid_oidc_native_client_without_secret" {
+  command = plan
+
+  variables {
+    oidc_client_secret = "not-a-real-secret"
+    user_trust_provider = {
+      type = "oidc"
+      oidc = {
+        issuer                      = "https://example.okta.com"
+        authorization_endpoint      = "https://example.okta.com/oauth2/v1/authorize"
+        token_endpoint              = "https://example.okta.com/oauth2/v1/token"
+        user_info_endpoint          = "https://example.okta.com/oauth2/v1/userinfo"
+        client_id                   = "client"
+        public_signing_key_endpoint = "https://example.okta.com/oauth2/v1/keys"
+        native_client_id            = "native"
+      }
+    }
+  }
+
+  expect_failures = [var.oidc_native_client_secret]
+}
+
+## V53-V58: central load balancer endpoints
+
+run "invalid_targets_and_target_details" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type           = "load-balancer"
+            port_ranges    = [{ from_port = 22, to_port = 22 }]
+            targets        = ["10.50.0.10"]
+            target_details = [{ ip = "10.50.0.11" }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_target_details_availability_zone" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type           = "load-balancer"
+            port_ranges    = [{ from_port = 22, to_port = 22 }]
+            target_details = [{ ip = "10.50.0.10", availability_zone = "everywhere" }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_target_details_port" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type           = "load-balancer"
+            port_ranges    = [{ from_port = 22, to_port = 22 }]
+            target_details = [{ ip = "10.50.0.10", port = 70000 }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_target_details_address" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type           = "load-balancer"
+            port_ranges    = [{ from_port = 22, to_port = 22 }]
+            target_details = [{ ip = "app.example.com" }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_target_details_duplicate" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type           = "load-balancer"
+            port_ranges    = [{ from_port = 22, to_port = 22 }]
+            target_details = [{ ip = "10.50.0.10", port = 22 }, { ip = "10.50.0.10", port = 22 }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_listener_port_without_targets" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type          = "cidr"
+            cidr          = "10.101.0.0/24"
+            port_ranges   = [{ from_port = 22, to_port = 22 }]
+            listener_port = 2201
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_listener_port_range" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type          = "load-balancer"
+            port_ranges   = [{ from_port = 22, to_port = 22 }]
+            targets       = ["10.50.0.10"]
+            listener_port = 70000
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_listener_port_duplicate" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type          = "load-balancer"
+            port_ranges   = [{ from_port = 22, to_port = 22 }]
+            targets       = ["10.50.0.10"]
+            listener_port = 2201
+          }
+          other-ssh = {
+            type          = "load-balancer"
+            port_ranges   = [{ from_port = 22, to_port = 22 }]
+            targets       = ["10.50.0.11"]
+            listener_port = 2201
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_health_check_tcp_with_path" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type         = "load-balancer"
+            port_ranges  = [{ from_port = 22, to_port = 22 }]
+            targets      = ["10.50.0.10"]
+            health_check = { path = "/health" }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_health_check_interval" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type         = "load-balancer"
+            port_ranges  = [{ from_port = 22, to_port = 22 }]
+            targets      = ["10.50.0.10"]
+            health_check = { interval = 1 }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_health_check_port" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type         = "load-balancer"
+            port_ranges  = [{ from_port = 22, to_port = 22 }]
+            targets      = ["10.50.0.10"]
+            health_check = { port = "ssh" }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_deregistration_delay" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type                 = "load-balancer"
+            port_ranges          = [{ from_port = 22, to_port = 22 }]
+            targets              = ["10.50.0.10"]
+            deregistration_delay = 4000
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_too_many_listeners" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          for index in range(51) : format("host-%d", index) => {
+            type          = "load-balancer"
+            port_ranges   = [{ from_port = 22, to_port = 22 }]
+            targets       = [format("10.50.1.%d", index + 1)]
+            listener_port = 2200 + index
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+## V59: Route 53
+
+run "invalid_dns_zone_id" {
+  command = plan
+
+  variables {
+    dns = {
+      zone_id = "/hostedzone/Z0123456789ABCDEFGHIJ"
+    }
+  }
+
+  expect_failures = [var.dns]
+}
+
+run "invalid_dns_ttl" {
+  command = plan
+
+  variables {
+    dns = {
+      zone_id = "Z0123456789ABCDEFGHIJ"
+      ttl     = -1
+    }
+  }
+
+  expect_failures = [var.dns]
+}
+
+## V60: existing log group
+
+run "invalid_existing_log_group_without_name" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = {
+        create_log_group = false
+      }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+## V61-V63: alarm customisation
+
+run "invalid_alarm_disabled_key" {
+  command = plan
+
+  variables {
+    alarms = {
+      disabled = ["http-500"]
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_override_key" {
+  command = plan
+
+  variables {
+    alarms = {
+      overrides = { http-500 = { threshold = 1 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_override_period" {
+  command = plan
+
+  variables {
+    alarms = {
+      overrides = { http-504 = { period = 45 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_override_window" {
+  command = plan
+
+  variables {
+    alarms = {
+      overrides = { no-access-allowed = { period = 3600, evaluation_periods = 169 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_additional_action" {
+  command = plan
+
+  variables {
+    alarms = {
+      additional_action_arns = ["pagerduty"]
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+## V64: security group rule quota
+
+run "invalid_load_balancer_rule_quota" {
+  command = plan
+
+  variables {
+    load_balancer = {
+      max_security_group_rules = 0
+    }
+  }
+
+  expect_failures = [var.load_balancer]
 }

@@ -5,10 +5,13 @@ variable "access_logs" {
     log_version = optional(string, "ocsf-1.0.0-rc.2")
     ## Include identity and device trust context in the logs; this is personal data, so it is opt-in
     include_trust_context = optional(bool, false)
-    ## CloudWatch Logs destination; the module creates the log group so retention is always bounded
+    ## CloudWatch Logs destination; by default the module creates the log group so retention is always bounded
     cloudwatch = optional(object({
-      # The log group name, defaults to /aws/verified-access/<name>
+      # The log group name, defaults to /aws/verified-access/<name>; required when create_log_group is false
       log_group_name = optional(string, null)
+      # Create the log group; false delivers to an existing log group (log_group_name), whose retention and
+      # encryption are then owned elsewhere, and retention_in_days and kms_key_arn are ignored
+      create_log_group = optional(bool, true)
       # The number of days to retain the logs
       retention_in_days = optional(number, 90)
       # An optional customer managed KMS key used to encrypt the log group
@@ -72,6 +75,14 @@ variable "access_logs" {
     )
     error_message = "The access_logs.cloudwatch.retention_in_days must be a value supported by CloudWatch Logs, e.g. 30, 90, 365."
   }
+
+  # V60: an existing log group is named, as the module cannot derive it
+  validation {
+    condition = var.access_logs == null ? true : (
+      var.access_logs.cloudwatch == null ? true : var.access_logs.cloudwatch.create_log_group || var.access_logs.cloudwatch.log_group_name != null
+    )
+    error_message = "Set access_logs.cloudwatch.log_group_name when create_log_group is false, as the module delivers to that existing log group."
+  }
 }
 
 variable "alarms" {
@@ -99,6 +110,21 @@ variable "alarms" {
       # The number of hours without an allowed request before alarming
       no_access_allowed_hours = optional(number, 24)
     }), {})
+    ## The alarms not to create, by key: http-504, access-denied, logging-stopped, no-access-allowed,
+    ## no-healthy-targets and unhealthy-targets (the last two are per endpoint with targets)
+    disabled = optional(list(string), [])
+    ## Additional ARNs notified on alarm and on recovery, e.g. an SNS topic subscribed by PagerDuty or AWS Chatbot
+    additional_action_arns = optional(list(string), [])
+    ## Per alarm overrides of the period (seconds), evaluation periods and threshold, keyed like disabled; overrides
+    ## win over thresholds
+    overrides = optional(map(object({
+      # The period in seconds: 10, 30 or a multiple of 60
+      period = optional(number, null)
+      # The number of periods evaluated
+      evaluation_periods = optional(number, null)
+      # The threshold compared with the statistic
+      threshold = optional(number, null)
+    })), {})
   })
   default = null
 
@@ -136,6 +162,35 @@ variable "alarms" {
       (var.alarms.sns_topic_arn == null || (var.alarms.kms_key_arn == null && !var.alarms.create_kms_key))
     )
     error_message = "Set at most one of alarms.create_kms_key and alarms.kms_key_arn, and neither when alarms.sns_topic_arn is set, as the key only applies to the topic created by the module."
+  }
+
+  # V61: the disabled alarms are ones the module creates
+  validation {
+    condition = var.alarms == null ? true : alltrue([
+      for key in var.alarms.disabled : contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets"], key)
+    ])
+    error_message = "The alarms.disabled entries must be http-504, access-denied, logging-stopped, no-access-allowed, no-healthy-targets or unhealthy-targets."
+  }
+
+  # V62: the overrides are keyed by alarms the module creates, with periods CloudWatch accepts, within the seven days
+  # CloudWatch evaluates
+  validation {
+    condition = var.alarms == null ? true : alltrue([
+      for key, override in var.alarms.overrides : (
+        contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets"], key) &&
+        (override.period == null ? true : contains([10, 30], override.period) || (override.period >= 60 && override.period % 60 == 0)) &&
+        (override.evaluation_periods == null ? true : override.evaluation_periods >= 1) &&
+        (override.period == null || override.evaluation_periods == null ? true : override.period * override.evaluation_periods <= 604800) &&
+        (override.threshold == null ? true : override.threshold >= 0)
+      )
+    ])
+    error_message = "The alarms.overrides must be keyed like alarms.disabled, with period 10, 30 or a multiple of 60, evaluation_periods at least 1 (period x evaluation_periods at most seven days) and a threshold of at least 0."
+  }
+
+  # V63: the additional actions are ARNs
+  validation {
+    condition     = var.alarms == null ? true : alltrue([for arn in var.alarms.additional_action_arns : can(regex("^arn:aws[a-z-]*:[a-z0-9-]+:", arn))])
+    error_message = "The alarms.additional_action_arns must be ARNs, e.g. arn:aws:sns:eu-west-2:111111111111:pagerduty."
   }
 }
 
@@ -200,6 +255,27 @@ variable "description" {
   default     = null
 }
 
+variable "dns" {
+  description = "An optional Route 53 public hosted zone where the module publishes the certificate validation records and the application CNAMEs (application_domain to endpoint domain) of http and https endpoints; null leaves DNS to the caller (outputs certificate_validation_records and application_domains)"
+  type = object({
+    ## The id of the public hosted zone of the application domains, e.g. Z0123456789ABCDEFGHIJ
+    zone_id = string
+    ## Publish the validation records of the module certificate
+    create_validation_records = optional(bool, true)
+    ## Publish a CNAME from each http and https endpoint application_domain to its endpoint domain
+    create_application_records = optional(bool, true)
+    ## The TTL in seconds of the records
+    ttl = optional(number, 300)
+  })
+  default = null
+
+  # V59: the zone is a Route 53 hosted zone id and the TTL a value Route 53 accepts
+  validation {
+    condition     = var.dns == null ? true : can(regex("^Z[A-Z0-9]{1,31}$", var.dns.zone_id)) && var.dns.ttl >= 0 && var.dns.ttl <= 2147483647
+    error_message = "The dns.zone_id must be a Route 53 hosted zone id (e.g. Z0123456789ABCDEFGHIJ, without /hostedzone/) and dns.ttl between 0 and 2147483647."
+  }
+}
+
 variable "device_trust_provider" {
   description = "An optional device posture trust provider; null disables device posture"
   type = object({
@@ -249,6 +325,12 @@ variable "device_trust_provider" {
   }
 }
 
+variable "fips_enabled" {
+  description = "Enable FIPS 140-2 validated endpoints on the Verified Access instance. Only supported in US, Canada and AWS GovCloud (US) regions (a check warns elsewhere); changing it replaces the instance and everything in it"
+  type        = bool
+  default     = false
+}
+
 variable "groups" {
   description = "The Verified Access groups keyed by name; each group holds its access policy and the endpoints it protects"
   type = map(object({
@@ -272,6 +354,8 @@ variable "groups" {
       # Why the structured policy cannot express this access
       justification = string
     }), null)
+    ## Tags merged over var.tags on the group and on every endpoint in it, e.g. a cost centre for chargeback
+    tags = optional(map(string), {})
     ## The endpoints in this group keyed by name; names must be unique across all groups
     endpoints = optional(map(object({
       # The endpoint type (load-balancer, network-interface, cidr, rds); cidr endpoints only reach addresses in the
@@ -296,6 +380,34 @@ variable "groups" {
       # The IPv4 addresses of the service across the transit gateway (load-balancer endpoints with topology hub); the
       # module creates a listener and target group on the central load balancer instead of using load_balancer_arn
       targets = optional(list(string), [])
+      # Instead of targets: the service addresses with an optional per target port (defaults to the endpoint port)
+      # and availability zone ("all" for addresses outside the load balancer VPC, or the zone name of an address
+      # inside it)
+      target_details = optional(list(object({
+        ip                = string
+        port              = optional(number, null)
+        availability_zone = optional(string, "all")
+      })), [])
+      # Hub only: the port of the listener on the central load balancer, which is also the port clients connect to
+      # on the endpoint domain; defaults to the endpoint port. Set it to put several services on the same port (e.g.
+      # SSH hosts on 22) behind the central load balancer: each keeps port_ranges (or port) as its service port
+      listener_port = optional(number, null)
+      # Hub only: the target group health check; defaults to TCP on the traffic port
+      health_check = optional(object({
+        protocol            = optional(string, "TCP")
+        port                = optional(string, "traffic-port")
+        path                = optional(string, null)
+        healthy_threshold   = optional(number, 3)
+        unhealthy_threshold = optional(number, 3)
+        interval            = optional(number, 30)
+      }), null)
+      # Hub only: the seconds the target group drains a deregistered target (0-3600), defaults to 300
+      deregistration_delay = optional(number, null)
+      # Hub only: preserve the client address at the target, defaults to false. Targets across a transit gateway
+      # reply to that address directly, bypassing the load balancer, so leave it off unless the return path is known
+      preserve_client_ip = optional(bool, null)
+      # Hub only: send a proxy protocol v2 header to the targets, defaults to false; the targets must expect it
+      proxy_protocol_v2 = optional(bool, null)
       # The network interface id (network-interface endpoints)
       network_interface_id = optional(string, null)
       # The CIDR block (cidr endpoints)
@@ -319,12 +431,23 @@ variable "groups" {
       security_group_ids = optional(list(string), [])
       # Override the CIDR blocks the endpoint security group may send to
       egress_cidr_blocks = optional(list(string), null)
+      # A structured endpoint policy, evaluated in addition to the group policy (both must allow): identity groups
+      # narrowing the group's audience and additional Cedar conditions, all combined with AND (and with the device
+      # condition when sensitive). The owner and justification default to the group's
+      policy = optional(object({
+        identity_groups       = optional(list(string), [])
+        additional_conditions = optional(list(string), [])
+        owner                 = optional(string, null)
+        justification         = optional(string, null)
+      }), null)
       # Escape hatch: a raw Cedar endpoint policy; requires security review
       raw_policy = optional(object({
         cedar         = string
         owner         = string
         justification = string
       }), null)
+      # Tags merged over var.tags and the group tags on the endpoint, its security group, target group and listener
+      tags = optional(map(string), {})
     })), {})
   }))
   default = {}
@@ -407,7 +530,7 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : (
-        endpoint.type == "load-balancer" ? endpoint.load_balancer_arn != null || length(endpoint.targets) > 0 :
+        endpoint.type == "load-balancer" ? endpoint.load_balancer_arn != null || length(endpoint.targets) + length(endpoint.target_details) > 0 :
         endpoint.type == "network-interface" ? endpoint.network_interface_id != null :
         endpoint.type == "cidr" ? endpoint.cidr != null :
         endpoint.type == "rds" ? endpoint.rds != null : true
@@ -472,7 +595,7 @@ variable "groups" {
   # V24: targets are IPv4 addresses
   validation {
     condition = alltrue([
-      for target in flatten([for group in values(var.groups) : [for endpoint in values(group.endpoints) : endpoint.targets]]) :
+      for target in flatten([for group in values(var.groups) : [for endpoint in values(group.endpoints) : concat(endpoint.targets, endpoint.target_details[*].ip)]]) :
       can(regex("^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$", target))
     ])
     error_message = "Endpoint targets must be IPv4 addresses, e.g. 10.50.0.10."
@@ -482,7 +605,7 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-      length(endpoint.targets) == 0 || (var.topology == "hub" && endpoint.type == "load-balancer")
+      length(endpoint.targets) + length(endpoint.target_details) == 0 || (var.topology == "hub" && endpoint.type == "load-balancer")
     ])
     error_message = "Endpoint targets are only supported on load-balancer endpoints with topology hub."
   }
@@ -491,7 +614,7 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-      endpoint.load_balancer_arn == null || length(endpoint.targets) == 0
+      endpoint.load_balancer_arn == null || length(endpoint.targets) + length(endpoint.target_details) == 0
     ])
     error_message = "A load-balancer endpoint must set either load_balancer_arn or targets, not both."
   }
@@ -500,38 +623,39 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-      length(endpoint.targets) == 0 || endpoint.protocol != "tcp" || (length(endpoint.port_ranges) == 1 && try(endpoint.port_ranges[0].from_port == endpoint.port_ranges[0].to_port, false))
+      length(endpoint.targets) + length(endpoint.target_details) == 0 || endpoint.protocol != "tcp" || (length(endpoint.port_ranges) == 1 && try(endpoint.port_ranges[0].from_port == endpoint.port_ranges[0].to_port, false))
     ])
     error_message = "A tcp endpoint with targets must have exactly one port range with from_port equal to to_port, which becomes its listener port."
   }
 
-  # V28: each endpoint with targets has its own listener port on the central load balancer
+  # V28: each endpoint with targets has its own listener port on the central load balancer: listener_port, or the
+  # endpoint port when unset
   validation {
     condition = length([
-      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint if length(endpoint.targets) > 0
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint if length(endpoint.targets) + length(endpoint.target_details) > 0
       ]) == length(distinct([
         for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-        endpoint.protocol == "tcp" ? try(endpoint.port_ranges[0].from_port, 0) : endpoint.port if length(endpoint.targets) > 0
+        endpoint.listener_port != null ? endpoint.listener_port : (endpoint.protocol == "tcp" ? try(endpoint.port_ranges[0].from_port, 0) : endpoint.port)
+        if length(endpoint.targets) + length(endpoint.target_details) > 0
     ]))
-    error_message = "Endpoints with targets must use different ports, as each has its own listener on the central load balancer."
+    error_message = "Endpoints with targets must use different listener ports, as each has its own listener on the central load balancer; set listener_port to put several services on the same port."
   }
 
-  # V29: the target group name va-<name>-<endpoint> fits in 32 characters, and nlb is reserved for the load
-  # balancer security group (verified-access-<name>-nlb)
+  # V29: nlb is reserved for the load balancer security group (verified-access-<name>-nlb)
   validation {
     condition = alltrue(flatten([
       for group in values(var.groups) : [
-        for name, endpoint in group.endpoints : length(var.name) + length(name) <= 28 && name != "nlb" if length(endpoint.targets) > 0
+        for name, endpoint in group.endpoints : name != "nlb" if length(endpoint.targets) + length(endpoint.target_details) > 0
       ]
     ]))
-    error_message = "Endpoints with targets must be named other than nlb, and the deployment name plus the endpoint name must be at most 28 characters, as their target group is named va-<name>-<endpoint> (max 32)."
+    error_message = "Endpoints with targets must be named other than nlb, which is reserved for the load balancer security group."
   }
 
   # V30: endpoints with targets use the module subnets, which the central load balancer accepts traffic from
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-      length(endpoint.targets) == 0 || endpoint.subnet_ids == null
+      length(endpoint.targets) + length(endpoint.target_details) == 0 || endpoint.subnet_ids == null
     ])
     error_message = "Endpoints with targets cannot override subnet_ids; they use var.subnet_ids, which hold the central load balancer."
   }
@@ -547,6 +671,138 @@ variable "groups" {
       )
     ])
     error_message = "An http or https endpoint using the module certificate must have an application_domain one level below certificate.domain_name, e.g. app.example.com for example.com."
+  }
+
+  # V46: an endpoint has at most one of a structured and a raw policy
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null || endpoint.raw_policy == null
+    ])
+    error_message = "An endpoint must set at most one of policy and raw_policy."
+  }
+
+  # V47: a structured endpoint policy references a trust provider (identity groups, the device condition of a
+  # sensitive endpoint, or an additional condition on the user or device context), as Cedar lint rule L2 requires
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : (
+        length(endpoint.policy.identity_groups) > 0 || endpoint.sensitive || anytrue([
+          for condition in endpoint.policy.additional_conditions : strcontains(condition, format("context.%s.", var.user_trust_provider.policy_reference_name)) || (
+            var.device_trust_provider == null ? false : strcontains(condition, format("context.%s.", coalesce(var.device_trust_provider.policy_reference_name, var.device_trust_provider.type)))
+          )
+        ])
+      )
+    ])
+    error_message = "An endpoint policy must reference a trust provider: list identity_groups, mark the endpoint sensitive, or add a condition on the user or device context (e.g. context.idc.user.email.address like \"*@example.com\")."
+  }
+
+  # V48 (Identity Center): endpoint policy identity groups are group ids, not display names
+  validation {
+    condition = var.user_trust_provider.type != "iam-identity-center" ? true : alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : alltrue([
+        for id in endpoint.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
+      ])
+    ])
+    error_message = "With IAM Identity Center, endpoint policy identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111), not display names."
+  }
+
+  # V49: an endpoint policy owner and justification are set together, like any policy's (V12)
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : (
+        (endpoint.policy.owner == null) == (endpoint.policy.justification == null) && (endpoint.policy.owner == null ? true : (
+          length(trimspace(endpoint.policy.owner)) > 0 &&
+          length(trimspace(endpoint.policy.justification)) >= 10 &&
+          !strcontains(endpoint.policy.owner, "\n") &&
+          !strcontains(endpoint.policy.justification, "\n")
+        ))
+      )
+    ])
+    error_message = "An endpoint policy sets both or neither of owner and justification (the group's are used when neither is set), with a non-empty owner and a single-line justification of at least 10 characters."
+  }
+
+  # V50: additional conditions are single Cedar expressions; a semicolon or line break could end the permit and
+  # start another statement
+  validation {
+    condition = alltrue(flatten([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? [] : [
+        for condition in endpoint.policy.additional_conditions : length(trimspace(condition)) > 0 && !strcontains(condition, ";") && !strcontains(condition, "\n")
+      ]
+    ]))
+    error_message = "Each endpoint policy additional_conditions entry must be a single-line Cedar expression without semicolons, e.g. context.http_request.http_method == \"GET\"."
+  }
+
+  # V53: detailed targets are IPv4 addresses with valid ports and availability zones, and replace targets
+  validation {
+    condition = alltrue(flatten([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : concat(
+        [length(endpoint.targets) == 0 || length(endpoint.target_details) == 0],
+        [
+          for target in endpoint.target_details : (
+            (target.port == null ? true : target.port >= 1 && target.port <= 65535) &&
+            (target.availability_zone == "all" || can(regex("^[a-z]{2}(-gov)?-[a-z]+-[0-9][a-z]$", target.availability_zone)))
+          )
+        ],
+      )
+    ]))
+    error_message = "Set at most one of targets and target_details; each target_details entry needs a port of 1-65535 (when set) and availability_zone \"all\" or a zone name, e.g. eu-west-2a."
+  }
+
+  # V54: each target address and port is registered once per endpoint
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      length(endpoint.target_details) == length(distinct([for target in endpoint.target_details : format("%s:%s", target.ip, target.port == null ? "endpoint" : tostring(target.port))])) &&
+      length(endpoint.targets) == length(distinct(endpoint.targets))
+    ])
+    error_message = "Each target address and port may only be listed once per endpoint."
+  }
+
+  # V55: the central load balancer settings apply only to endpoints with targets, and the listener port is valid
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : (
+        length(endpoint.targets) + length(endpoint.target_details) > 0 ? true : (
+          endpoint.listener_port == null && endpoint.health_check == null && endpoint.deregistration_delay == null &&
+          endpoint.preserve_client_ip == null && endpoint.proxy_protocol_v2 == null
+        )
+        ) && (
+        endpoint.listener_port == null ? true : endpoint.listener_port >= 1 && endpoint.listener_port <= 65535
+      )
+    ])
+    error_message = "listener_port, health_check, deregistration_delay, preserve_client_ip and proxy_protocol_v2 only apply to endpoints with targets (topology hub), and listener_port must be 1-65535."
+  }
+
+  # V56: the health check is one a network load balancer accepts
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.health_check == null ? true : (
+        contains(["TCP", "HTTP", "HTTPS"], endpoint.health_check.protocol) &&
+        (endpoint.health_check.port == "traffic-port" || can(regex("^[0-9]{1,5}$", endpoint.health_check.port)) && try(tonumber(endpoint.health_check.port) >= 1 && tonumber(endpoint.health_check.port) <= 65535, false)) &&
+        (endpoint.health_check.protocol == "TCP" ? endpoint.health_check.path == null : endpoint.health_check.path == null || startswith(coalesce(endpoint.health_check.path, "/"), "/")) &&
+        endpoint.health_check.healthy_threshold >= 2 && endpoint.health_check.healthy_threshold <= 10 &&
+        endpoint.health_check.unhealthy_threshold >= 2 && endpoint.health_check.unhealthy_threshold <= 10 &&
+        endpoint.health_check.interval >= 5 && endpoint.health_check.interval <= 300
+      )
+    ])
+    error_message = "A health_check needs protocol TCP, HTTP or HTTPS, port traffic-port or 1-65535, a path starting with / (HTTP and HTTPS only), thresholds of 2-10 and an interval of 5-300 seconds."
+  }
+
+  # V57: the deregistration delay is one target groups accept
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      endpoint.deregistration_delay == null ? true : endpoint.deregistration_delay >= 0 && endpoint.deregistration_delay <= 3600
+    ])
+    error_message = "The deregistration_delay must be between 0 and 3600 seconds."
+  }
+
+  # V58: a network load balancer has at most 50 listeners, one per endpoint with targets
+  validation {
+    condition = length([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint if length(endpoint.targets) + length(endpoint.target_details) > 0
+    ]) <= 50
+    error_message = "At most 50 endpoints may have targets, as each is a listener on the central load balancer (50 listeners per network load balancer). Deploy a second instance of the module for more."
   }
 }
 
@@ -571,6 +827,12 @@ variable "load_balancer" {
     enable_deletion_protection = optional(bool, false)
     ## The idle timeout in seconds of the TCP listeners (60-6000); keep SSH sessions alive with ServerAliveInterval
     tcp_idle_timeout_seconds = optional(number, 350)
+    ## Balance across the targets in every availability zone; IP targets across a transit gateway have no zone of
+    ## their own (availability zone all), so leave it on unless the targets are zonal
+    cross_zone_enabled = optional(bool, true)
+    ## The rules per security group quota of the account (default 60, inbound and outbound counted separately, one
+    ## rule per address range); raise it here after raising the quota (Service Quotas, Amazon VPC)
+    max_security_group_rules = optional(number, 60)
   })
   default = {}
 
@@ -587,6 +849,12 @@ variable "load_balancer" {
   validation {
     condition     = var.load_balancer.tcp_idle_timeout_seconds >= 60 && var.load_balancer.tcp_idle_timeout_seconds <= 6000
     error_message = "The load_balancer.tcp_idle_timeout_seconds must be between 60 and 6000."
+  }
+
+  # V64: the security group rule quota is within the range Amazon VPC allows
+  validation {
+    condition     = var.load_balancer.max_security_group_rules >= 1 && var.load_balancer.max_security_group_rules <= 1000
+    error_message = "The load_balancer.max_security_group_rules must be between 1 and 1000."
   }
 }
 
@@ -630,6 +898,18 @@ variable "name" {
   }
 }
 
+variable "name_prefix" {
+  description = "The prefix of all resource names, to follow the caller's naming convention, e.g. prod-euw2-va gives prod-euw2-va-<name>-nlb; scope pipeline roles to <name_prefix>-*"
+  type        = string
+  default     = "verified-access"
+
+  # V45: the prefix is safe in every resource name, and leaves room for a target group hash of at least 8 characters
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,21}[a-z0-9])?$", var.name_prefix))
+    error_message = "The name_prefix must be lowercase alphanumeric and hyphens, starting and ending with an alphanumeric character (max 23)."
+  }
+}
+
 variable "oidc_client_secret" {
   description = "The OAuth client secret for an OIDC user trust provider; source it from a secret store, never from tfvars"
   type        = string
@@ -640,6 +920,23 @@ variable "oidc_client_secret" {
   validation {
     condition     = var.user_trust_provider.type != "oidc" ? true : var.oidc_client_secret != null
     error_message = "The oidc_client_secret is required when user_trust_provider.type is oidc."
+  }
+}
+
+variable "oidc_native_client_secret" {
+  description = "The OAuth client secret of a separate native application client (user_trust_provider.oidc.native_client_id), defaults to oidc_client_secret; source it from a secret store, never from tfvars"
+  type        = string
+  default     = null
+  sensitive   = true
+
+  # V52: the secret belongs to a native application client, and a separate client has its own secret
+  validation {
+    condition = (
+      var.oidc_native_client_secret == null ? true : try(var.user_trust_provider.oidc.public_signing_key_endpoint != null, false)
+      ) && (
+      try(var.user_trust_provider.oidc.native_client_id == null || var.user_trust_provider.oidc.native_client_id == var.user_trust_provider.oidc.client_id, true) || var.oidc_native_client_secret != null
+    )
+    error_message = "The oidc_native_client_secret requires an OIDC provider with public_signing_key_endpoint, and is required when native_client_id differs from client_id."
   }
 }
 
@@ -670,10 +967,10 @@ variable "topology" {
     error_message = "The topology must be hub or single-vpc."
   }
 
-  # V23: the load balancer name verified-access-<name> fits in 32 characters
+  # V23: the load balancer name <name_prefix>-<name> fits in 32 characters
   validation {
-    condition     = var.topology != "hub" || length(var.name) <= 16
-    error_message = "With topology hub the name must be at most 16 characters, as the load balancer is named verified-access-<name> (max 32)."
+    condition     = var.topology != "hub" || length(var.name_prefix) + length(var.name) <= 31
+    error_message = "With topology hub the name_prefix plus the name must be at most 31 characters, as the load balancer is named <name_prefix>-<name> (max 32)."
   }
 }
 
@@ -703,6 +1000,14 @@ variable "user_trust_provider" {
       scope = optional(string, "openid email groups offline_access")
       # The public signing key endpoint, enables native application (Connectivity Client) access
       public_signing_key_endpoint = optional(string, null)
+      # The claim holding the user's groups, rendered into the policies as context.<policy_reference_name>.<claim>;
+      # a dotted path reaches a nested claim, e.g. additional_user_context.groups
+      groups_claim = optional(string, "groups")
+      # A separate OAuth client for the native application (Connectivity Client), defaults to client_id; its secret
+      # is passed in oidc_native_client_secret
+      native_client_id = optional(string, null)
+      # The scopes of the native application client, defaults to scope
+      native_scope = optional(string, null)
     }), null)
   })
 
@@ -722,6 +1027,20 @@ variable "user_trust_provider" {
   validation {
     condition     = (var.user_trust_provider.type == "oidc") == (var.user_trust_provider.oidc != null)
     error_message = "Set user_trust_provider.oidc when type is oidc, and only then."
+  }
+
+  # V51: the groups claim is a Cedar attribute path
+  validation {
+    condition     = var.user_trust_provider.oidc == null ? true : can(regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", var.user_trust_provider.oidc.groups_claim))
+    error_message = "The user_trust_provider.oidc.groups_claim must be a claim name or dotted path of letters, digits and underscores, e.g. groups or additional_user_context.groups; use raw_policy for claims such as URLs."
+  }
+
+  # V52: a native application client needs the public signing key endpoint that enables native application access
+  validation {
+    condition = var.user_trust_provider.oidc == null ? true : (
+      var.user_trust_provider.oidc.native_client_id == null && var.user_trust_provider.oidc.native_scope == null
+    ) || var.user_trust_provider.oidc.public_signing_key_endpoint != null
+    error_message = "The user_trust_provider.oidc.native_client_id and native_scope require public_signing_key_endpoint, which enables native application (Connectivity Client) access."
   }
 }
 

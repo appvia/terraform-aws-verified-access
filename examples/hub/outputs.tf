@@ -28,7 +28,12 @@ output "rendered_policies" {
   value       = module.verified_access.rendered_policies
 }
 
-output "target_private_ip" {
-  description = "The private IP of the target in the spoke, reachable over SSH through the Connectivity Client"
-  value       = aws_instance.target.private_ip
+output "client_configuration_command" {
+  description = "The AWS CLI command exporting the Connectivity Client configuration"
+  value       = module.verified_access.client_configuration_command
+}
+
+output "target_private_ips" {
+  description = "The private IPs of the targets in the spoke, reachable over SSH through the Connectivity Client"
+  value       = { for name, target in aws_instance.target : name => target.private_ip }
 }

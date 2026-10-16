@@ -152,7 +152,18 @@ Every rule is scoped to one port and one destination: an endpoint can only reach
 
 ### With an inspection VPC
 
-**Recommendation: inspect.** With a central network firewall, associate the transit gateway attachment of the VPC holding the endpoints and the NLB with the inspection route table, so traffic to tenants passes the firewall like any other east-west traffic: one setting in the connectivity configuration, no change to Verified Access. The firewall must allow the endpoint subnets to the tenant ports. This path is validated by routing analysis, not tested.
+**Recommendation: inspect.** With a central network firewall, associate the transit gateway attachment of the VPC holding the endpoints and the NLB with the inspection route table, so traffic to tenants passes the firewall like any other east-west traffic: one setting in the connectivity configuration, no change to Verified Access. This path is validated by routing analysis, not tested.
+
+Verified Access does not depend on the firewall, but a firewall that is not prepared for this traffic breaks it. Check:
+
+| Check | Why |
+| --- | --- |
+| **Rules allow the endpoint and NLB subnets to the tenant ports** (for example 22, 80) | The NLB sends from its own addresses in the hub subnets, so the firewall sees "hub subnet to tenant port". Without a rule the traffic is dropped, and users see a timeout that looks like a policy denial |
+| **Symmetric routing**: appliance mode on the inspection VPC's transit gateway attachment | A stateful firewall drops replies it did not see leave; asymmetric paths through different firewall endpoints break connections |
+| **NLB health checks are allowed** on the same ports | Blocked health checks mark targets unhealthy, fire the NLB alarms and stop forwarding |
+| **Idle timeouts** are aligned | Firewalls expire idle flows too (AWS Network Firewall: 350 seconds by default); keep SSH keep alives |
+
+What the firewall adds, and does not: it enforces which hub subnets reach which tenant ports, on top of Verified Access. It cannot see the user (only the NLB's address; identity is enforced by Verified Access first), and it cannot inspect SSH or TLS content, only addresses and ports.
 
 ## Alongside the existing ingress path
 

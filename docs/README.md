@@ -6,5 +6,6 @@
 | [How it works](how-it-works.md) | Network questions: components, diagrams, traffic paths, topologies, firewall checklist, quotas, limitations |
 | [Security](security.md) | The approval gate, policy checks, identity, logging |
 | [Operations](operations.md) | Metrics, alarms, dashboard, runbook, troubleshooting, certificate validation, teardown |
-| [Cost](cost.md) | Prices and the comparison with bastions and workstations |
+| [Reference](reference.md) | Every input, nested setting and output, with defaults (generated) |
+| [Cost](cost.md) | Prices and the break-even with per user jump boxes |
 | [Decisions](adr/) | Architecture decision records |

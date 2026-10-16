@@ -372,8 +372,10 @@ variable "groups" {
       port = optional(number, null)
       # The port ranges for tcp endpoints
       port_ranges = optional(list(object({
+        ## The first port of the range
         from_port = number
-        to_port   = number
+        ## The last port of the range (the same as from_port for a single port)
+        to_port = number
       })), [])
       # The load balancer arn (load-balancer endpoints)
       load_balancer_arn = optional(string, null)
@@ -384,8 +386,11 @@ variable "groups" {
       # and availability zone ("all" for addresses outside the load balancer VPC, or the zone name of an address
       # inside it)
       target_details = optional(list(object({
-        ip                = string
-        port              = optional(number, null)
+        ## The IPv4 address of the target
+        ip = string
+        ## The port of the target, defaults to the endpoint port
+        port = optional(number, null)
+        ## The availability zone of the target; all for addresses across a transit gateway
         availability_zone = optional(string, "all")
       })), [])
       # Hub only: the port of the listener on the central load balancer, which is also the port clients connect to
@@ -394,12 +399,18 @@ variable "groups" {
       listener_port = optional(number, null)
       # Hub only: the target group health check; defaults to TCP on the traffic port
       health_check = optional(object({
-        protocol            = optional(string, "TCP")
-        port                = optional(string, "traffic-port")
-        path                = optional(string, null)
-        healthy_threshold   = optional(number, 3)
+        ## The health check protocol (TCP, HTTP or HTTPS)
+        protocol = optional(string, "TCP")
+        ## The port checked, defaults to the port receiving traffic
+        port = optional(string, "traffic-port")
+        ## The path checked (HTTP and HTTPS health checks only)
+        path = optional(string, null)
+        ## Consecutive successes before a target is healthy (2-10)
+        healthy_threshold = optional(number, 3)
+        ## Consecutive failures before a target is unhealthy (2-10)
         unhealthy_threshold = optional(number, 3)
-        interval            = optional(number, 30)
+        ## The seconds between checks (5-300)
+        interval = optional(number, 30)
       }), null)
       # Hub only: the seconds the target group drains a deregistered target (0-3600), defaults to 300
       deregistration_delay = optional(number, null)
@@ -414,10 +425,14 @@ variable "groups" {
       cidr = optional(string, null)
       # The RDS target (rds endpoints); set exactly one of the arns
       rds = optional(object({
+        ## The RDS instance ARN
         instance_arn = optional(string, null)
-        cluster_arn  = optional(string, null)
-        proxy_arn    = optional(string, null)
-        endpoint     = string
+        ## The Aurora cluster ARN
+        cluster_arn = optional(string, null)
+        ## The RDS Proxy ARN
+        proxy_arn = optional(string, null)
+        ## The database endpoint address users connect to
+        endpoint = string
       }), null)
       # The public DNS name users browse to (http/https endpoints only)
       application_domain = optional(string, null)
@@ -435,15 +450,22 @@ variable "groups" {
       # narrowing the group's audience and additional Cedar conditions, all combined with AND (and with the device
       # condition when sensitive). The owner and justification default to the group's
       policy = optional(object({
-        identity_groups       = optional(list(string), [])
+        ## The identity groups permitted to this endpoint (any of); empty leaves the group policy's audience
+        identity_groups = optional(list(string), [])
+        ## Extra Cedar conditions, each one line, all of which must hold
         additional_conditions = optional(list(string), [])
-        owner                 = optional(string, null)
-        justification         = optional(string, null)
+        ## The team accountable for this access, defaults to the group policy owner
+        owner = optional(string, null)
+        ## Why this access exists, defaults to the group policy justification
+        justification = optional(string, null)
       }), null)
       # Escape hatch: a raw Cedar endpoint policy; requires security review
       raw_policy = optional(object({
-        cedar         = string
-        owner         = string
+        ## The Cedar policy text
+        cedar = string
+        ## The team accountable for this access
+        owner = string
+        ## Why the structured policy cannot express this access
         justification = string
       }), null)
       # Tags merged over var.tags and the group tags on the endpoint, its security group, target group and listener

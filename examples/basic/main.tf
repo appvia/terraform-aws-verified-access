@@ -32,7 +32,7 @@ module "network" {
   name                   = "verified-access-basic"
   private_subnet_netmask = 24
   tags                   = local.tags
-  vpc_cidr               = "10.90.0.0/21"
+  vpc_cidr               = "10.10.0.0/21"
 
   subnets = {
     verified_access = {
@@ -75,13 +75,14 @@ resource "aws_instance" "target" {
   }
 }
 
-## Provision Verified Access with IAM Identity Center and an SSH endpoint to the target
+## Provision Verified Access with IAM Identity Center and an SSH endpoint to the target in the same VPC
 module "verified_access" {
   source = "../.."
 
   name       = "basic"
   subnet_ids = module.network.all_subnets_by_name["verified_access"].ids
   tags       = local.tags
+  topology   = "single-vpc"
   vpc_id     = module.network.vpc_id
 
   user_trust_provider = {

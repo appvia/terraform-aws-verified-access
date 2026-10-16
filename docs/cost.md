@@ -17,6 +17,10 @@ Prices are AWS list prices from the [Verified Access pricing page](https://aws.a
 | Central internal NLB | about $0.025 per hour, plus capacity units (tiny for access traffic) | **about $20, shared by every application** (one listener per application, up to 50) |
 | Access logs in CloudWatch | Ingestion and storage per GB | A few dollars at access log volumes |
 | Public ACM certificate (HTTPS) | Free | $0 |
+| Alarms (module option `alarms`) | about $0.10 per standard alarm a month; SNS email is free at these volumes | **under $1** (4 alarms, plus 2 per endpoint with `targets`) |
+| Dashboard (module option `dashboard`) | $3 per dashboard a month beyond the free tier | **about $3** |
+| Metric stream (module option `metric_stream`) | $0.003 per 1,000 metric updates, plus the Firehose delivery stream | A few dollars at these metric counts |
+| AWS WAF (module option `waf`, created web ACL) | $5 per web ACL plus $1 per rule group a month, plus $0.60 per million requests | **about $8**, plus requests |
 
 ## What it replaces
 

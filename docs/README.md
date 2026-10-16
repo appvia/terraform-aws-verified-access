@@ -1,13 +1,10 @@
 # Documentation
 
-| Page | What it covers |
+| Page | Read it when |
 | --- | --- |
-| [Limitations](limitations.md) | What the service and the design cannot do, and the workarounds |
-| [Architecture](architecture.md) | Design, network, traffic paths, endpoint types, quotas, requesting access |
-| [Approval gate](approval-gate.md) | Who approves, where, and the audit trail |
-| [Observability](observability.md) | Metrics, alarms and thresholds, Dash0 route |
-| [Logging](logging.md) | Destinations, OCSF version, trust context, retention, access |
+| [Getting started](getting-started.md) | **Start here.** Prerequisites, the module block line by line, the first deployment, everyday changes, moving off bastions, teardown |
+| [How it works](how-it-works.md) | Network questions: components, diagrams, traffic paths, topologies, firewall checklist, quotas, limitations |
+| [Security](security.md) | The approval gate, policy checks, identity, logging |
+| [Operations](operations.md) | Metrics, alarms, dashboard, runbook, troubleshooting, certificate validation, teardown |
 | [Cost](cost.md) | Prices and the comparison with bastions and workstations |
-| [Migration](migration.md) | Moving a tenant off a bastion, and the gaps |
-| [Runbook](runbook.md) | Granting access, adding applications, connecting, troubleshooting, teardown |
 | [Decisions](adr/) | Architecture decision records |

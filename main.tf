@@ -120,12 +120,12 @@ module "endpoints" {
   application_domain     = each.value.application_domain
   cidr                   = each.value.cidr
   description            = each.value.description
-  domain_certificate_arn = each.value.domain_certificate_arn
-  egress_cidr_blocks     = coalesce(each.value.egress_cidr_blocks, var.allowed_egress_cidr_blocks)
+  domain_certificate_arn = local.endpoint_targets[each.key].domain_certificate_arn
+  egress_cidr_blocks     = local.endpoint_targets[each.key].egress_cidr_blocks
   endpoint_domain_prefix = coalesce(each.value.endpoint_domain_prefix, each.key)
   group_id               = module.groups[each.value.group].id
   kms_key_arn            = var.kms_key_arn
-  load_balancer_arn      = each.value.load_balancer_arn
+  load_balancer_arn      = local.endpoint_targets[each.key].load_balancer_arn
   name                   = format("%s-%s", var.name, each.key)
   network_interface_id   = each.value.network_interface_id
   policy_document        = lookup(local.endpoint_policies, each.key, null)

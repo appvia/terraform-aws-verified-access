@@ -30,7 +30,7 @@ variables {
     platform-engineers = {
       policy = {
         ## Out of order and duplicated on purpose: the rendered policy must be sorted and de-duplicated
-        identity_groups = ["d242c5b0-6081-1845-6fa8-6e0d9513c107", "c242c5b0-6081-1845-6fa8-6e0d9513c107", "c242c5b0-6081-1845-6fa8-6e0d9513c107"]
+        identity_groups = ["d242c5b0-6081-1845-6fa8-6e0d9513c107", "11111111-1111-1111-1111-111111111111", "11111111-1111-1111-1111-111111111111"]
         owner           = "platform-team"
         justification   = "Platform engineers operate the demo tenant hosts"
       }
@@ -54,7 +54,7 @@ variables {
           cidr        = "10.101.1.0/24"
           port_ranges = [{ from_port = 22, to_port = 22 }]
           raw_policy = {
-            cedar         = "permit(principal, action, resource)\nwhen {\n  context.idc.groups has \"c242c5b0-6081-1845-6fa8-6e0d9513c107\" &&\n  context.tcp_flow.client_ip == \"192.0.2.10\"\n};"
+            cedar         = "permit(principal, action, resource)\nwhen {\n  context.idc.groups has \"11111111-1111-1111-1111-111111111111\" &&\n  context.tcp_flow.client_ip == \"192.0.2.10\"\n};"
             owner         = "security-team"
             justification = "Break-glass access restricted to the incident response jump IP"
           }

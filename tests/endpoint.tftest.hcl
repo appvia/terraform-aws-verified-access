@@ -88,7 +88,7 @@ run "https_load_balancer_endpoint" {
     load_balancer_arn      = "arn:aws:elasticloadbalancing:eu-west-2:111111111111:loadbalancer/app/demo/abc"
     application_domain     = "demo.example.com"
     domain_certificate_arn = "arn:aws:acm:eu-west-2:111111111111:certificate/abc"
-    egress_cidr_blocks     = ["10.24.0.0/15"]
+    egress_cidr_blocks     = ["10.50.0.0/16"]
     policy_document        = "permit(principal, action, resource) when { context.crowdstrike.assessment.overall >= 50 };"
   }
 
@@ -109,7 +109,7 @@ run "https_load_balancer_endpoint" {
 
   assert {
     condition = anytrue([
-      for rule in aws_security_group.current.egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.24.0.0/15") && rule.from_port == 443 && rule.to_port == 443
+      for rule in aws_security_group.current.egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.50.0.0/16") && rule.from_port == 443 && rule.to_port == 443
     ])
     error_message = "A load balancer endpoint should send to the egress CIDRs on its port"
   }
@@ -194,12 +194,12 @@ run "group_submodule" {
   variables {
     name            = "test-platform-engineers"
     instance_id     = "vai-0123456789abcdef0"
-    policy_document = "permit(principal, action, resource) when { context.idc.groups has \"c242c5b0-6081-1845-6fa8-6e0d9513c107\" };"
+    policy_document = "permit(principal, action, resource) when { context.idc.groups has \"11111111-1111-1111-1111-111111111111\" };"
     kms_key_arn     = "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
   }
 
   assert {
-    condition     = aws_verifiedaccess_group.current.policy_document == "permit(principal, action, resource) when { context.idc.groups has \"c242c5b0-6081-1845-6fa8-6e0d9513c107\" };"
+    condition     = aws_verifiedaccess_group.current.policy_document == "permit(principal, action, resource) when { context.idc.groups has \"11111111-1111-1111-1111-111111111111\" };"
     error_message = "The group should carry the rendered policy"
   }
 

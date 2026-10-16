@@ -1,7 +1,31 @@
-
 output "access_log_group_name" {
   description = "The name of the CloudWatch log group receiving the access logs, when enabled"
   value       = local.log_group_name
+}
+
+output "alarm_kms_key_arn" {
+  description = "The ARN of the KMS key encrypting the alarm topic, when encrypted"
+  value       = local.alarm_kms_key_arn
+}
+
+output "alarm_topic_arn" {
+  description = "The ARN of the SNS topic notified by the alarms, when enabled"
+  value       = local.alarm_topic_arn
+}
+
+output "certificate_arn" {
+  description = "The ARN of the wildcard certificate requested by the module, when enabled"
+  value       = local.enable_certificate ? aws_acm_certificate.current[0].arn : null
+}
+
+output "certificate_validation_records" {
+  description = "A map of DNS record name to value (CNAME) proving ownership of the certificate domain; publish them in the domain's DNS"
+  value       = local.enable_certificate ? { for option in aws_acm_certificate.current[0].domain_validation_options : option.resource_record_name => option.resource_record_value } : {}
+}
+
+output "dashboard_name" {
+  description = "The name of the CloudWatch dashboard, when enabled"
+  value       = local.enable_dashboard ? aws_cloudwatch_dashboard.current[0].dashboard_name : null
 }
 
 output "device_trust_provider_id" {
@@ -34,6 +58,21 @@ output "instance_id" {
   value       = aws_verifiedaccess_instance.current.id
 }
 
+output "load_balancer_arn" {
+  description = "The ARN of the central load balancer, when topology is hub"
+  value       = local.enable_load_balancer ? aws_lb.current[0].arn : null
+}
+
+output "load_balancer_dns_name" {
+  description = "The DNS name of the central load balancer, when topology is hub"
+  value       = local.enable_load_balancer ? aws_lb.current[0].dns_name : null
+}
+
+output "load_balancer_security_group_id" {
+  description = "The id of the central load balancer security group, when topology is hub"
+  value       = local.enable_load_balancer ? aws_security_group.load_balancer[0].id : null
+}
+
 output "metric_namespace" {
   description = "The CloudWatch namespace of the log derived metrics (AccessAllowed, AccessDenied, Http504, Http5xx), when enabled"
   value       = local.enable_metric_filters ? local.metric_namespace : null
@@ -55,4 +94,9 @@ output "rendered_policies" {
 output "user_trust_provider_id" {
   description = "The id of the user trust provider"
   value       = aws_verifiedaccess_trust_provider.user.id
+}
+
+output "web_acl_arn" {
+  description = "The ARN of the web ACL associated with the instance, when enabled"
+  value       = local.web_acl_arn
 }

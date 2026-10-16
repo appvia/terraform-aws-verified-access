@@ -74,6 +74,71 @@ variable "access_logs" {
   }
 }
 
+variable "alarms" {
+  description = "Alarms on the log derived metrics, the central load balancer and changes made outside the pipeline; null disables alarms. Requires CloudWatch access logs with metric filters"
+  type = object({
+    ## An existing SNS topic to notify, defaults to a topic created by the module (verified-access-<name>-alarms)
+    sns_topic_arn = optional(string, null)
+    ## Encrypt the created topic with a customer managed KMS key the module creates (verified-access-<name>-alarms)
+    create_kms_key = optional(bool, false)
+    ## Encrypt the created topic with an existing customer managed KMS key; its key policy must permit CloudWatch and
+    ## EventBridge. Leave both unset for an unencrypted topic
+    kms_key_arn = optional(string, null)
+    ## The email addresses subscribed to the topic; each recipient must confirm the subscription
+    email_addresses = optional(list(string), [])
+    ## The role the deployment pipeline assumes; when set, any other principal changing Verified Access raises an alarm
+    pipeline_role_name = optional(string, null)
+    ## The alarm thresholds; starting values, to be tuned from real usage
+    thresholds = optional(object({
+      # The number of HTTP 504 responses in five minutes
+      http_504 = optional(number, 5)
+      # The number of denied requests in five minutes
+      access_denied = optional(number, 20)
+      # The number of hours without access log events before alarming
+      logging_stopped_hours = optional(number, 1)
+      # The number of hours without an allowed request before alarming
+      no_access_allowed_hours = optional(number, 24)
+    }), {})
+  })
+  default = null
+
+  # V35: the log derived alarms need the log derived metrics
+  validation {
+    condition     = var.alarms == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
+    error_message = "Alarms require access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+  }
+
+  # V36: the thresholds are positive and the alarm windows are within the seven days CloudWatch evaluates
+  validation {
+    condition = var.alarms == null ? true : (
+      var.alarms.thresholds.http_504 >= 1 &&
+      var.alarms.thresholds.access_denied >= 1 &&
+      var.alarms.thresholds.logging_stopped_hours >= 1 && var.alarms.thresholds.logging_stopped_hours <= 168 &&
+      var.alarms.thresholds.no_access_allowed_hours >= 1 && var.alarms.thresholds.no_access_allowed_hours <= 168
+    )
+    error_message = "The alarms.thresholds must be at least 1, and the hour thresholds at most 168 (seven days)."
+  }
+
+  # V37: the topic, key and recipients are well formed
+  validation {
+    condition = var.alarms == null ? true : (
+      (var.alarms.sns_topic_arn == null ? true : can(regex("^arn:aws[a-z-]*:sns:", var.alarms.sns_topic_arn))) &&
+      (var.alarms.kms_key_arn == null ? true : can(regex("^arn:aws[a-z-]*:kms:", var.alarms.kms_key_arn))) &&
+      alltrue([for address in var.alarms.email_addresses : can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", address))])
+    )
+    error_message = "The alarms.sns_topic_arn must be an SNS topic ARN, alarms.kms_key_arn a KMS key ARN and alarms.email_addresses valid email addresses."
+  }
+
+  # V38: the key only applies to a topic the module creates, and is either created or supplied
+  validation {
+    condition = var.alarms == null ? true : (
+      !(var.alarms.create_kms_key && var.alarms.kms_key_arn != null) &&
+      (var.alarms.sns_topic_arn == null || (var.alarms.kms_key_arn == null && !var.alarms.create_kms_key))
+    )
+    error_message = "Set at most one of alarms.create_kms_key and alarms.kms_key_arn, and neither when alarms.sns_topic_arn is set, as the key only applies to the topic created by the module."
+  }
+}
+
 variable "allowed_egress_cidr_blocks" {
   description = "The CIDR blocks endpoint security groups may send traffic to when the target range cannot be derived (load-balancer, network-interface and rds endpoints)"
   type        = list(string)
@@ -85,10 +150,48 @@ variable "allowed_egress_cidr_blocks" {
   }
 }
 
+variable "certificate" {
+  description = "An optional wildcard public certificate (*.<domain_name>) for http and https endpoints that set no domain_certificate_arn; publish the certificate_validation_records output in the domain's DNS"
+  type = object({
+    ## The domain the certificate covers, e.g. example.com requests *.example.com
+    domain_name = string
+    ## Wait for the certificate to be issued before creating the endpoints that use it; publish the validation records first
+    wait_for_validation = optional(bool, false)
+  })
+  default = null
+
+  # V34: the domain is a plain domain name, the module adds the wildcard
+  validation {
+    condition     = var.certificate == null ? true : can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", var.certificate.domain_name))
+    error_message = "The certificate.domain_name must be a lowercase domain name without a wildcard, e.g. example.com."
+  }
+}
+
 variable "cidr_endpoints_custom_subdomain" {
   description = "An optional custom subdomain for CIDR endpoints; delegate it to the name servers exported by the module"
   type        = string
   default     = null
+}
+
+variable "dashboard" {
+  description = "An optional CloudWatch dashboard (verified-access-<name>) showing access decisions, HTTP errors, load balancer health and who is connecting; null disables it. Requires CloudWatch access logs with metric filters"
+  type = object({
+    ## The period in seconds of the metric widgets
+    period = optional(number, 300)
+  })
+  default = null
+
+  # V39: the dashboard shows the log derived metrics and queries the access logs
+  validation {
+    condition     = var.dashboard == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
+    error_message = "The dashboard requires access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+  }
+
+  # V40: the period is one CloudWatch accepts for metric widgets
+  validation {
+    condition     = var.dashboard == null ? true : contains([60, 300, 900, 3600, 21600, 86400], var.dashboard.period)
+    error_message = "The dashboard.period must be 60, 300, 900, 3600, 21600 or 86400 seconds."
+  }
 }
 
 variable "description" {
@@ -190,6 +293,9 @@ variable "groups" {
       })), [])
       # The load balancer arn (load-balancer endpoints)
       load_balancer_arn = optional(string, null)
+      # The IPv4 addresses of the service across the transit gateway (load-balancer endpoints with topology hub); the
+      # module creates a listener and target group on the central load balancer instead of using load_balancer_arn
+      targets = optional(list(string), [])
       # The network interface id (network-interface endpoints)
       network_interface_id = optional(string, null)
       # The CIDR block (cidr endpoints)
@@ -251,7 +357,7 @@ variable "groups" {
         for id in group.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
       ])
     ])
-    error_message = "With IAM Identity Center, identity_groups must be group ids (e.g. c242c5b0-6081-1845-6fa8-6e0d9513c107), not display names."
+    error_message = "With IAM Identity Center, identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111), not display names."
   }
 
   # V12: every policy has an accountable owner and a single-line justification
@@ -301,13 +407,13 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : (
-        endpoint.type == "load-balancer" ? endpoint.load_balancer_arn != null :
+        endpoint.type == "load-balancer" ? endpoint.load_balancer_arn != null || length(endpoint.targets) > 0 :
         endpoint.type == "network-interface" ? endpoint.network_interface_id != null :
         endpoint.type == "cidr" ? endpoint.cidr != null :
         endpoint.type == "rds" ? endpoint.rds != null : true
       )
     ])
-    error_message = "Each endpoint must set the target for its type: load_balancer_arn, network_interface_id, cidr or rds."
+    error_message = "Each endpoint must set the target for its type: load_balancer_arn (or targets with topology hub), network_interface_id, cidr or rds."
   }
 
   # V13: cidr endpoints use a valid CIDR block
@@ -344,9 +450,9 @@ variable "groups" {
   validation {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
-      endpoint.protocol == "tcp" ? true : endpoint.application_domain != null && endpoint.domain_certificate_arn != null
+      endpoint.protocol == "tcp" ? true : endpoint.application_domain != null && (endpoint.domain_certificate_arn != null || var.certificate != null)
     ])
-    error_message = "http and https endpoints require application_domain and domain_certificate_arn (a public ACM certificate)."
+    error_message = "http and https endpoints require application_domain and either domain_certificate_arn (a public ACM certificate) or the module certificate."
   }
 
   # V15: sensitive endpoints require a device trust provider (fail closed)
@@ -362,6 +468,86 @@ variable "groups" {
     condition     = length(flatten([for group in values(var.groups) : keys(group.endpoints)])) == length(distinct(flatten([for group in values(var.groups) : keys(group.endpoints)])))
     error_message = "Endpoint names must be unique across all groups."
   }
+
+  # V24: targets are IPv4 addresses
+  validation {
+    condition = alltrue([
+      for target in flatten([for group in values(var.groups) : [for endpoint in values(group.endpoints) : endpoint.targets]]) :
+      can(regex("^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$", target))
+    ])
+    error_message = "Endpoint targets must be IPv4 addresses, e.g. 10.50.0.10."
+  }
+
+  # V25: targets are reached through the central load balancer, which only exists with topology hub
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      length(endpoint.targets) == 0 || (var.topology == "hub" && endpoint.type == "load-balancer")
+    ])
+    error_message = "Endpoint targets are only supported on load-balancer endpoints with topology hub."
+  }
+
+  # V26: a load-balancer endpoint uses either its own load balancer or the central one, not both
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      endpoint.load_balancer_arn == null || length(endpoint.targets) == 0
+    ])
+    error_message = "A load-balancer endpoint must set either load_balancer_arn or targets, not both."
+  }
+
+  # V27: a tcp endpoint with targets maps to exactly one listener port
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      length(endpoint.targets) == 0 || endpoint.protocol != "tcp" || (length(endpoint.port_ranges) == 1 && try(endpoint.port_ranges[0].from_port == endpoint.port_ranges[0].to_port, false))
+    ])
+    error_message = "A tcp endpoint with targets must have exactly one port range with from_port equal to to_port, which becomes its listener port."
+  }
+
+  # V28: each endpoint with targets has its own listener port on the central load balancer
+  validation {
+    condition = length([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint if length(endpoint.targets) > 0
+      ]) == length(distinct([
+        for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+        endpoint.protocol == "tcp" ? try(endpoint.port_ranges[0].from_port, 0) : endpoint.port if length(endpoint.targets) > 0
+    ]))
+    error_message = "Endpoints with targets must use different ports, as each has its own listener on the central load balancer."
+  }
+
+  # V29: the target group name va-<name>-<endpoint> fits in 32 characters, and nlb is reserved for the load
+  # balancer security group (verified-access-<name>-nlb)
+  validation {
+    condition = alltrue(flatten([
+      for group in values(var.groups) : [
+        for name, endpoint in group.endpoints : length(var.name) + length(name) <= 28 && name != "nlb" if length(endpoint.targets) > 0
+      ]
+    ]))
+    error_message = "Endpoints with targets must be named other than nlb, and the deployment name plus the endpoint name must be at most 28 characters, as their target group is named va-<name>-<endpoint> (max 32)."
+  }
+
+  # V30: endpoints with targets use the module subnets, which the central load balancer accepts traffic from
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      length(endpoint.targets) == 0 || endpoint.subnet_ids == null
+    ])
+    error_message = "Endpoints with targets cannot override subnet_ids; they use var.subnet_ids, which hold the central load balancer."
+  }
+
+  # V31: the module certificate covers the application domain of the endpoints that use it
+  validation {
+    condition = var.certificate == null ? true : alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : (
+        endpoint.protocol == "tcp" || endpoint.domain_certificate_arn != null || endpoint.application_domain == null ? true : (
+          endswith(lower(endpoint.application_domain), format(".%s", var.certificate.domain_name)) &&
+          !strcontains(trimsuffix(lower(endpoint.application_domain), format(".%s", var.certificate.domain_name)), ".")
+        )
+      )
+    ])
+    error_message = "An http or https endpoint using the module certificate must have an application_domain one level below certificate.domain_name, e.g. app.example.com for example.com."
+  }
 }
 
 variable "kms_key_arn" {
@@ -372,6 +558,64 @@ variable "kms_key_arn" {
   validation {
     condition     = var.kms_key_arn == null ? true : can(regex("^arn:aws[a-z-]*:kms:", var.kms_key_arn))
     error_message = "The kms_key_arn must be a KMS key ARN."
+  }
+}
+
+variable "load_balancer" {
+  description = "Settings for the central internal network load balancer created with topology hub, which reaches services across the transit gateway"
+  type = object({
+    ## Fixed private IPv4 addresses for the load balancer keyed by subnet id, so firewalls and tenants can allow exact
+    ## addresses; changing them replaces the load balancer
+    private_ips = optional(map(string), {})
+    ## Protect the load balancer from deletion
+    enable_deletion_protection = optional(bool, false)
+    ## The idle timeout in seconds of the TCP listeners (60-6000); keep SSH sessions alive with ServerAliveInterval
+    tcp_idle_timeout_seconds = optional(number, 350)
+  })
+  default = {}
+
+  # V32: the fixed addresses are IPv4 addresses in the module subnets
+  validation {
+    condition = alltrue([
+      for subnet_id, address in var.load_balancer.private_ips :
+      contains(var.subnet_ids, subnet_id) && can(regex("^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$", address))
+    ])
+    error_message = "The load_balancer.private_ips must be keyed by subnet ids from var.subnet_ids, with IPv4 addresses as values."
+  }
+
+  # V33: the idle timeout is within the range Network Load Balancers support
+  validation {
+    condition     = var.load_balancer.tcp_idle_timeout_seconds >= 60 && var.load_balancer.tcp_idle_timeout_seconds <= 6000
+    error_message = "The load_balancer.tcp_idle_timeout_seconds must be between 60 and 6000."
+  }
+}
+
+variable "metric_stream" {
+  description = "An optional CloudWatch metric stream of the log derived metrics (and, with topology hub, the AWS/NetworkELB namespace) to a Kinesis Data Firehose delivery stream, e.g. for an external observability platform; null disables it"
+  type = object({
+    ## The ARN of the Kinesis Data Firehose delivery stream receiving the metrics
+    firehose_arn = string
+    ## The ARN of the IAM role CloudWatch assumes to write to the delivery stream
+    role_arn = string
+    ## The output format (json, opentelemetry0.7, opentelemetry1.0)
+    output_format = optional(string, "opentelemetry1.0")
+  })
+  default = null
+
+  # V41: the stream carries the log derived metrics; an empty include filter would stream every metric
+  validation {
+    condition     = var.metric_stream == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
+    error_message = "The metric stream requires access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+  }
+
+  # V42: the delivery stream, role and output format are well formed
+  validation {
+    condition = var.metric_stream == null ? true : (
+      can(regex("^arn:aws[a-z-]*:firehose:", var.metric_stream.firehose_arn)) &&
+      can(regex("^arn:aws[a-z-]*:iam::", var.metric_stream.role_arn)) &&
+      contains(["json", "opentelemetry0.7", "opentelemetry1.0"], var.metric_stream.output_format)
+    )
+    error_message = "The metric_stream needs a Firehose delivery stream ARN, an IAM role ARN and an output_format of json, opentelemetry0.7 or opentelemetry1.0."
   }
 }
 
@@ -413,6 +657,24 @@ variable "subnet_ids" {
 variable "tags" {
   description = "The tags to apply to all resources"
   type        = map(string)
+}
+
+variable "topology" {
+  description = "The network topology: single-vpc (endpoints reach services in their own VPC) or hub (a central internal network load balancer reaches services in spoke VPCs across a transit gateway)"
+  type        = string
+  default     = "single-vpc"
+
+  # V22: the topology is supported
+  validation {
+    condition     = contains(["hub", "single-vpc"], var.topology)
+    error_message = "The topology must be hub or single-vpc."
+  }
+
+  # V23: the load balancer name verified-access-<name> fits in 32 characters
+  validation {
+    condition     = var.topology != "hub" || length(var.name) <= 16
+    error_message = "With topology hub the name must be at most 16 characters, as the load balancer is named verified-access-<name> (max 32)."
+  }
 }
 
 variable "user_trust_provider" {
@@ -470,5 +732,28 @@ variable "vpc_id" {
   validation {
     condition     = can(regex("^vpc-[0-9a-f]+$", var.vpc_id))
     error_message = "The vpc_id must be a VPC id, e.g. vpc-0123456789abcdef0."
+  }
+}
+
+variable "waf" {
+  description = "An optional AWS WAF web ACL for the instance, either an existing one or one created by the module with AWS managed rule groups; null disables it. WAF applies to http and https endpoints only, and with IAM Identity Center it inspects requests before sign-in"
+  type = object({
+    ## The ARN of an existing regional web ACL to associate
+    web_acl_arn = optional(string, null)
+    ## Create a regional web ACL (verified-access-<name>) with the AWS common, known bad inputs and IP reputation rule groups
+    create = optional(bool, false)
+  })
+  default = null
+
+  # V43: exactly one source of web ACL
+  validation {
+    condition     = var.waf == null ? true : (var.waf.web_acl_arn != null) != var.waf.create
+    error_message = "The waf must set exactly one of web_acl_arn or create = true."
+  }
+
+  # V44: the web ACL is a regional WAFv2 web ACL
+  validation {
+    condition     = var.waf == null ? true : var.waf.web_acl_arn == null || can(regex("^arn:aws[a-z-]*:wafv2:[a-z0-9-]+:[0-9]{12}:regional/webacl/", var.waf.web_acl_arn))
+    error_message = "The waf.web_acl_arn must be a regional WAFv2 web ACL ARN."
   }
 }

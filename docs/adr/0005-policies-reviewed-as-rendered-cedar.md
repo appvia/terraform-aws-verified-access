@@ -18,4 +18,4 @@ Raw Cedar scattered through Terraform is hard to read, review and lint. Reviewer
 
 - Each access change touches two files (the intent and the effect): intended friction.
 - Reviewers read Cedar diffs, which are short and readable.
-- See [approval gate](../approval-gate.md) for the worked examples.
+- See [security](../security.md#a-worked-example) for the worked examples.

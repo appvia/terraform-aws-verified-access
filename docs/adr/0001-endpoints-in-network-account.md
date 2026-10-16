@@ -13,7 +13,7 @@ One Verified Access instance per environment, with its trust providers, groups, 
 
 ## Consequences
 
-- Tenants cannot create endpoints; the pull request is the approval gate ([approval gate](../approval-gate.md)).
+- Tenants cannot create endpoints; the pull request is the approval gate ([approval gate](../security.md#the-approval-gate)).
 - Endpoints sit away from tenant services, so a way across the transit gateway is needed ([ADR 0002](0002-central-nlb-for-tenant-services.md)).
 - The 50 endpoint quota per account and region is shared by all tenants (adjustable).
 - IAM Identity Center must be the organisation instance in the same region (it is).

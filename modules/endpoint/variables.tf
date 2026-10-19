@@ -10,6 +10,12 @@ variable "cidr" {
   default     = null
 }
 
+variable "create_security_group" {
+  description = "Create the endpoint security group, permitting traffic only to the targets on the endpoint ports; false uses only security_group_ids"
+  type        = bool
+  default     = true
+}
+
 variable "description" {
   description = "The description of the Verified Access endpoint"
   type        = string
@@ -107,9 +113,14 @@ variable "rds" {
 }
 
 variable "security_group_ids" {
-  description = "Additional security groups to attach to the endpoint"
+  description = "Additional security groups to attach to the endpoint; with create_security_group false, the only ones"
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = var.create_security_group || length(var.security_group_ids) > 0
+    error_message = "An endpoint without the module security group (create_security_group = false) needs at least one security group id."
+  }
 }
 
 variable "subnet_ids" {

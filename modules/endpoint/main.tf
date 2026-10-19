@@ -1,6 +1,9 @@
 
-## Provision the security group for the endpoint network interfaces, permitting traffic only to its targets on its ports
+## Provision the security group for the endpoint network interfaces, permitting traffic only to its targets on its
+## ports, unless the endpoint uses only the supplied security groups
 resource "aws_security_group" "current" {
+  count = var.create_security_group ? 1 : 0
+
   name        = format("%s-%s", var.name_prefix, var.name)
   description = format("Verified Access endpoint %s", var.name)
   tags        = merge(var.tags, { Name = format("%s-%s", var.name_prefix, var.name) })
@@ -28,7 +31,7 @@ resource "aws_verifiedaccess_endpoint" "current" {
   endpoint_domain_prefix   = coalesce(var.endpoint_domain_prefix, var.name)
   endpoint_type            = var.type
   policy_document          = var.policy_document
-  security_group_ids       = concat([aws_security_group.current.id], var.security_group_ids)
+  security_group_ids       = concat(aws_security_group.current[*].id, var.security_group_ids)
   tags                     = merge(var.tags, { Name = var.name })
   verified_access_group_id = var.group_id
 
@@ -112,4 +115,11 @@ resource "aws_verifiedaccess_endpoint" "current" {
       kms_key_arn                  = var.kms_key_arn
     }
   }
+}
+
+## The security group is created with count since create_security_group was added; move the state of endpoints made
+## before, so upgrading does not replace the security group (and with it the endpoint)
+moved {
+  from = aws_security_group.current
+  to   = aws_security_group.current[0]
 }

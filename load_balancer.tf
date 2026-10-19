@@ -1,6 +1,8 @@
 locals {
   ## Indicates the central load balancer is created (topology hub)
   enable_load_balancer = var.topology == "hub"
+  ## Indicates the module creates the central load balancer security group, rather than using only the supplied ones
+  enable_load_balancer_security_group = local.enable_load_balancer && var.load_balancer.create_security_group
   ## The health check of target groups without their own: TCP on the traffic port
   default_health_check = {
     protocol            = "TCP"
@@ -93,7 +95,7 @@ resource "aws_lb" "current" {
   internal                         = true
   load_balancer_type               = "network"
   name                             = local.resource_name
-  security_groups                  = [aws_security_group.load_balancer[0].id]
+  security_groups                  = concat(aws_security_group.load_balancer[*].id, var.load_balancer.security_group_ids)
   tags                             = merge(local.tags, { Name = local.resource_name })
 
   dynamic "subnet_mapping" {
@@ -108,9 +110,10 @@ resource "aws_lb" "current" {
 
 ## Provision the security group for the central load balancer, permitting traffic only from the module subnets on the
 ## listener ports and only to the registered targets on their target (and health check) ports. It allows the subnet
-## ranges rather than the endpoint security groups, which would form a dependency cycle
+## ranges rather than the endpoint security groups, which would form a dependency cycle. With
+## load_balancer.create_security_group false the supplied security groups carry these rules instead
 resource "aws_security_group" "load_balancer" {
-  count = local.enable_load_balancer ? 1 : 0
+  count = local.enable_load_balancer_security_group ? 1 : 0
 
   description = format("Central load balancer for Verified Access %s", var.name)
   name        = format("%s-nlb", local.resource_name)

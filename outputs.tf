@@ -3,6 +3,31 @@ output "access_log_group_name" {
   value       = local.log_group_name
 }
 
+output "access_log_bucket_arn" {
+  description = "The ARN of the S3 bucket created for the access logs, when access_logs.s3.create"
+  value       = local.enable_access_log_bucket ? aws_s3_bucket.access_logs[0].arn : null
+}
+
+output "access_log_bucket_name" {
+  description = "The name of the S3 bucket receiving the access logs, created or existing, when enabled"
+  value       = local.access_log_bucket_name
+}
+
+output "access_log_firehose_arn" {
+  description = "The ARN of the Firehose delivery stream created for the access logs, when access_logs.firehose.create"
+  value       = local.enable_access_log_firehose ? aws_kinesis_firehose_delivery_stream.access_logs[0].arn : null
+}
+
+output "access_log_firehose_role_arn" {
+  description = "The ARN of the IAM role the created Firehose delivery stream writes to its bucket with; a bucket in another account must permit it"
+  value       = local.enable_access_log_firehose ? aws_iam_role.access_log_firehose[0].arn : null
+}
+
+output "access_log_kms_key_arn" {
+  description = "The ARN of the KMS key created to encrypt the access log group, when access_logs.cloudwatch.create_kms_key"
+  value       = local.enable_log_group_kms_key ? aws_kms_key.access_logs[0].arn : null
+}
+
 output "alarm_kms_key_arn" {
   description = "The ARN of the KMS key encrypting the alarm topic, when encrypted"
   value       = local.alarm_kms_key_arn
@@ -32,7 +57,7 @@ output "client_configuration_command" {
   description = "The AWS CLI command exporting the Connectivity Client configuration of the instance; needs ec2:ExportVerifiedAccessInstanceClientConfiguration"
   value = format(
     "aws ec2 export-verified-access-instance-client-configuration --verified-access-instance-id %s --region %s > ClientConfig-%s.json",
-    aws_verifiedaccess_instance.current.id,
+    local.instance_id,
     data.aws_region.current.region,
     var.name,
   )
@@ -44,8 +69,8 @@ output "dashboard_name" {
 }
 
 output "device_trust_provider_id" {
-  description = "The id of the device trust provider, when configured"
-  value       = local.enable_device_trust ? aws_verifiedaccess_trust_provider.device[0].id : null
+  description = "The id of the device trust provider, when the module creates one"
+  value       = local.enable_device_trust_provider ? aws_verifiedaccess_trust_provider.device[0].id : null
 }
 
 output "endpoint_device_validation_domains" {
@@ -64,7 +89,7 @@ output "endpoint_ids" {
 }
 
 output "endpoint_security_group_ids" {
-  description = "A map of endpoint name to the security group attached to its network interfaces; targets must allow traffic from the endpoint subnets"
+  description = "A map of endpoint name to the security group the module created for its network interfaces (null with create_security_group false); targets must allow traffic from the endpoint subnets"
   value       = { for name, endpoint in module.endpoints : name => endpoint.security_group_id }
 }
 
@@ -79,13 +104,13 @@ output "group_ids" {
 }
 
 output "instance_arn" {
-  description = "The ARN of the Verified Access instance"
+  description = "The ARN of the Verified Access instance, created or existing"
   value       = local.instance_arn
 }
 
 output "instance_id" {
-  description = "The id of the Verified Access instance"
-  value       = aws_verifiedaccess_instance.current.id
+  description = "The id of the Verified Access instance, created or existing"
+  value       = local.instance_id
 }
 
 output "load_balancer_arn" {
@@ -99,23 +124,38 @@ output "load_balancer_dns_name" {
 }
 
 output "load_balancer_security_group_id" {
-  description = "The id of the central load balancer security group, when topology is hub"
-  value       = local.enable_load_balancer ? aws_security_group.load_balancer[0].id : null
+  description = "The id of the central load balancer security group created by the module, when topology is hub (null with load_balancer.create_security_group false)"
+  value       = local.enable_load_balancer_security_group ? aws_security_group.load_balancer[0].id : null
+}
+
+output "kms_key_arn" {
+  description = "The ARN of the KMS key encrypting the trust providers, groups and endpoints, created (create_kms_key) or supplied, when set"
+  value       = local.kms_key_arn
 }
 
 output "metric_namespace" {
-  description = "The CloudWatch namespace of the log derived metrics (AccessAllowed, AccessDenied, Http504, Http5xx), when enabled"
+  description = "The CloudWatch namespace of the log derived metrics (AccessAllowed, AccessDenied, Http504, Http5xx), when any metric filter is created"
   value       = local.enable_metric_filters ? local.metric_namespace : null
 }
 
+output "metric_stream_role_arn" {
+  description = "The ARN of the IAM role the metric stream writes to Firehose with, created (metric_stream.create_role) or supplied, when enabled"
+  value       = local.metric_stream_role_arn
+}
+
+output "metrics" {
+  description = "A map of every metric the module makes available, keyed as alarms.custom metric and metric_stream.include expect, to { namespace, metric_name, dimensions, statistic (recommended), source (log metric filter, AWS/Logs or AWS/NetworkELB), description } i.e. access-denied, incoming-log-events, load-balancer-processed-bytes and <endpoint>/healthy-host-count; Verified Access publishes no CloudWatch metrics of its own"
+  value       = local.metrics
+}
+
 output "name_servers" {
-  description = "The name servers of the instance, used to delegate cidr_endpoints_custom_subdomain"
-  value       = aws_verifiedaccess_instance.current.name_servers
+  description = "The name servers of the instance, used to delegate cidr_endpoints_custom_subdomain; empty with existing_instance"
+  value       = local.enable_instance ? aws_verifiedaccess_instance.current[0].name_servers : []
 }
 
 output "oidc_redirect_uris" {
   description = "A map of http and https endpoint name to the sign-in redirect URI to register with the OIDC client (https://<application_domain>/oauth2/idpresponse), when the user trust provider is oidc"
-  value       = var.user_trust_provider.type == "oidc" ? { for name, domain in local.application_endpoints : name => format("https://%s/oauth2/idpresponse", domain) } : {}
+  value       = local.user_trust_provider_type == "oidc" ? { for name, domain in local.application_endpoints : name => format("https://%s/oauth2/idpresponse", domain) } : {}
 }
 
 output "rendered_policies" {
@@ -132,8 +172,8 @@ output "target_group_arns" {
 }
 
 output "user_trust_provider_id" {
-  description = "The id of the user trust provider"
-  value       = aws_verifiedaccess_trust_provider.user.id
+  description = "The id of the user trust provider, when the module creates the instance (null with existing_instance)"
+  value       = local.enable_instance ? aws_verifiedaccess_trust_provider.user[0].id : null
 }
 
 output "web_acl_arn" {

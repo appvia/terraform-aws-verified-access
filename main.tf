@@ -1,14 +1,19 @@
 
-## Provision the Verified Access instance, the container for trust providers, groups and endpoints
+## Provision the Verified Access instance, the container for trust providers, groups and endpoints, unless the groups
+## and endpoints are added to an existing instance
 resource "aws_verifiedaccess_instance" "current" {
+  count = local.enable_instance ? 1 : 0
+
   cidr_endpoints_custom_subdomain = var.cidr_endpoints_custom_subdomain
   description                     = var.description
   fips_enabled                    = var.fips_enabled
   tags                            = merge(local.tags, { Name = var.name })
 }
 
-## Provision the user identity trust provider (IAM Identity Center or OIDC)
+## Provision the user identity trust provider (IAM Identity Center or OIDC); an existing instance has its own
 resource "aws_verifiedaccess_trust_provider" "user" {
+  count = local.enable_instance ? 1 : 0
+
   description              = format("User identity trust provider for %s", var.name)
   policy_reference_name    = local.user_policy_reference
   tags                     = merge(local.tags, { Name = format("%s-user", var.name) })
@@ -47,18 +52,18 @@ resource "aws_verifiedaccess_trust_provider" "user" {
   }
 
   dynamic "sse_specification" {
-    for_each = var.kms_key_arn != null ? [true] : []
+    for_each = local.kms_key_arn != null ? [true] : []
 
     content {
       customer_managed_key_enabled = true
-      kms_key_arn                  = var.kms_key_arn
+      kms_key_arn                  = local.kms_key_arn
     }
   }
 }
 
 ## Provision the optional device posture trust provider
 resource "aws_verifiedaccess_trust_provider" "device" {
-  count = local.enable_device_trust ? 1 : 0
+  count = local.enable_device_trust_provider ? 1 : 0
 
   description                = format("Device trust provider for %s", var.name)
   device_trust_provider_type = var.device_trust_provider.type
@@ -71,26 +76,28 @@ resource "aws_verifiedaccess_trust_provider" "device" {
   }
 
   dynamic "sse_specification" {
-    for_each = var.kms_key_arn != null ? [true] : []
+    for_each = local.kms_key_arn != null ? [true] : []
 
     content {
       customer_managed_key_enabled = true
-      kms_key_arn                  = var.kms_key_arn
+      kms_key_arn                  = local.kms_key_arn
     }
   }
 }
 
 ## Attach the user trust provider to the instance
 resource "aws_verifiedaccess_instance_trust_provider_attachment" "user" {
-  verifiedaccess_instance_id       = aws_verifiedaccess_instance.current.id
-  verifiedaccess_trust_provider_id = aws_verifiedaccess_trust_provider.user.id
+  count = local.enable_instance ? 1 : 0
+
+  verifiedaccess_instance_id       = aws_verifiedaccess_instance.current[0].id
+  verifiedaccess_trust_provider_id = aws_verifiedaccess_trust_provider.user[0].id
 }
 
 ## Attach the device trust provider to the instance
 resource "aws_verifiedaccess_instance_trust_provider_attachment" "device" {
-  count = local.enable_device_trust ? 1 : 0
+  count = local.enable_device_trust_provider ? 1 : 0
 
-  verifiedaccess_instance_id       = aws_verifiedaccess_instance.current.id
+  verifiedaccess_instance_id       = aws_verifiedaccess_instance.current[0].id
   verifiedaccess_trust_provider_id = aws_verifiedaccess_trust_provider.device[0].id
 }
 
@@ -100,14 +107,14 @@ module "groups" {
   source   = "./modules/group"
 
   description     = each.value.description
-  instance_id     = aws_verifiedaccess_instance.current.id
-  kms_key_arn     = var.kms_key_arn
+  instance_id     = local.instance_id
+  kms_key_arn     = local.kms_key_arn
   name            = format("%s-%s", var.name, each.key)
   policy_document = local.group_policies[each.key]
   tags            = merge(local.tags, each.value.tags)
 
-  ## Verified Access requires trust providers to be attached before groups are created;
-  ## nothing in the group references the attachments, so the dependency is made explicit
+  ## Verified Access requires trust providers to be attached before groups are created; nothing in the group
+  ## references the attachments, so the dependency is made explicit (an existing instance has them attached already)
   depends_on = [
     aws_verifiedaccess_instance_trust_provider_attachment.device,
     aws_verifiedaccess_instance_trust_provider_attachment.user,
@@ -125,9 +132,10 @@ module "endpoints" {
   description            = each.value.description
   domain_certificate_arn = local.endpoint_targets[each.key].domain_certificate_arn
   egress_cidr_blocks     = local.endpoint_targets[each.key].egress_cidr_blocks
+  create_security_group  = each.value.create_security_group
   endpoint_domain_prefix = coalesce(each.value.endpoint_domain_prefix, each.key)
   group_id               = module.groups[each.value.group].id
-  kms_key_arn            = var.kms_key_arn
+  kms_key_arn            = local.kms_key_arn
   load_balancer_arn      = local.endpoint_targets[each.key].load_balancer_arn
   name                   = format("%s-%s", var.name, each.key)
   name_prefix            = var.name_prefix
@@ -142,4 +150,67 @@ module "endpoints" {
   tags                   = each.value.tags
   type                   = each.value.type
   vpc_id                 = var.vpc_id
+}
+
+## The instance, user trust provider and its attachment are created with count since existing_instance was added;
+## move the state of deployments made before, so upgrading does not replace them
+moved {
+  from = aws_verifiedaccess_instance.current
+  to   = aws_verifiedaccess_instance.current[0]
+}
+
+moved {
+  from = aws_verifiedaccess_trust_provider.user
+  to   = aws_verifiedaccess_trust_provider.user[0]
+}
+
+moved {
+  from = aws_verifiedaccess_instance_trust_provider_attachment.user
+  to   = aws_verifiedaccess_instance_trust_provider_attachment.user[0]
+}
+
+## Provision the key encrypting the trust providers, groups and endpoints, when requested. Verified Access uses the key
+## through grants it creates on behalf of the caller, so the key policy permits any principal in this account to use
+## it via Verified Access in this region, as AWS documents
+resource "aws_kms_key" "current" {
+  count = var.create_kms_key ? 1 : 0
+
+  deletion_window_in_days = 30
+  description             = format("Encrypts the Verified Access %s trust providers, groups and endpoints", var.name)
+  enable_key_rotation     = true
+  tags                    = merge(local.tags, { Name = local.resource_name })
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowAccountAdministration"
+        Effect    = "Allow"
+        Action    = "kms:*"
+        Resource  = "*"
+        Principal = { AWS = format("arn:%s:iam::%s:root", data.aws_partition.current.partition, data.aws_caller_identity.current.account_id) }
+      },
+      {
+        Sid       = "AllowVerifiedAccess"
+        Effect    = "Allow"
+        Action    = ["kms:CreateGrant", "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey"]
+        Resource  = "*"
+        Principal = { AWS = "*" }
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+            "kms:ViaService"    = format("verified-access.%s.amazonaws.com", data.aws_region.current.region)
+          }
+        }
+      }
+    ]
+  })
+}
+
+## Name the Verified Access key so it can be found in the console
+resource "aws_kms_alias" "current" {
+  count = var.create_kms_key ? 1 : 0
+
+  name          = format("alias/%s", local.resource_name)
+  target_key_id = aws_kms_key.current[0].key_id
 }

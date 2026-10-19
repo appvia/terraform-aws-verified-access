@@ -1,8 +1,9 @@
 
-## Warn when the instance has no access logging configured; logging is optional so examples and tests can omit it
+## Warn when the instance has no access logging configured; logging is optional so examples and tests can omit it,
+## and an existing instance's logging is owned elsewhere
 check "access_logs" {
   assert {
-    condition     = var.access_logs != null
+    condition     = var.access_logs != null || var.existing_instance != null
     error_message = "Verified Access access logging is disabled, so access attempts will not be recorded. Set var.access_logs for any live environment."
   }
 }

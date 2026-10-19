@@ -165,6 +165,156 @@ run "single_vpc_metric_stream" {
   }
 }
 
+run "metric_stream_created_role" {
+  command = apply
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      create_role  = true
+    }
+  }
+
+  override_data {
+    target = data.aws_caller_identity.current
+    values = { account_id = "111111111111" }
+  }
+
+  override_resource {
+    target = aws_iam_role.metric_stream
+    values = { arn = "arn:aws:iam::111111111111:role/verified-access-test-metric-stream" }
+  }
+
+  assert {
+    condition     = aws_iam_role.metric_stream[0].name == "verified-access-test-metric-stream"
+    error_message = "The role should be named <name_prefix>-<name>-metric-stream"
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_iam_role.metric_stream[0].assume_role_policy).Statement[0].Principal.Service == "streams.metrics.cloudwatch.amazonaws.com" &&
+      jsondecode(aws_iam_role.metric_stream[0].assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111"
+    )
+    error_message = "The role should be trusted by CloudWatch metric streams in this account only"
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_iam_role_policy.metric_stream[0].policy).Statement[0].Resource == "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability" &&
+      jsondecode(aws_iam_role_policy.metric_stream[0].policy).Statement[0].Action == ["firehose:PutRecord", "firehose:PutRecordBatch"]
+    )
+    error_message = "The role should only write to the delivery stream"
+  }
+
+  assert {
+    condition     = aws_cloudwatch_metric_stream.current[0].role_arn == aws_iam_role.metric_stream[0].arn && output.metric_stream_role_arn == aws_iam_role.metric_stream[0].arn
+    error_message = "The metric stream should use the created role, which is exported"
+  }
+}
+
+run "metric_stream_supplied_role" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+    }
+  }
+
+  assert {
+    condition     = length(aws_iam_role.metric_stream) == 0 && output.metric_stream_role_arn == "arn:aws:iam::111111111111:role/metric-stream"
+    error_message = "No role should be created when one is supplied"
+  }
+}
+
+run "metric_stream_include" {
+  command = apply
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+        }
+      }
+    }
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+      include      = ["access-denied", "http-504", "app-ssh/healthy-host-count", "app-ssh/unhealthy-host-count", "load-balancer-processed-bytes", "incoming-log-events"]
+    }
+  }
+
+  assert {
+    condition = {
+      for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace => toset(filter.metric_names)
+      } == {
+      "VerifiedAccess/test" = toset(["AccessDenied", "Http504"])
+      "AWS/NetworkELB"      = toset(["HealthyHostCount", "ProcessedBytes", "UnHealthyHostCount"])
+      "AWS/Logs"            = toset(["IncomingLogEvents"])
+    }
+    error_message = "The metric stream should include only the chosen metrics, by namespace and metric name"
+  }
+}
+
+run "metrics_output" {
+  command = apply
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = toset(keys(output.metrics)) == toset([
+      "access-allowed", "access-denied", "http-504", "http-5xx", "incoming-log-events", "incoming-bytes",
+      "load-balancer-active-flow-count", "load-balancer-new-flow-count", "load-balancer-processed-bytes",
+      "load-balancer-tcp-client-reset-count", "load-balancer-tcp-target-reset-count", "load-balancer-tcp-elb-reset-count",
+      "load-balancer-port-allocation-error-count",
+      "app-ssh/healthy-host-count", "app-ssh/unhealthy-host-count",
+    ])
+    error_message = "The metrics output should list every metric the module makes available"
+  }
+
+  assert {
+    condition = (
+      output.metrics["app-ssh/healthy-host-count"].namespace == "AWS/NetworkELB" &&
+      output.metrics["app-ssh/healthy-host-count"].metric_name == "HealthyHostCount" &&
+      output.metrics["app-ssh/healthy-host-count"].dimensions["TargetGroup"] == "targetgroup/verified-access/0123456789abcdef" &&
+      output.metrics["app-ssh/healthy-host-count"].dimensions["LoadBalancer"] == "net/verified-access-test/0123456789abcdef" &&
+      output.metrics["load-balancer-processed-bytes"].dimensions == { LoadBalancer = "net/verified-access-test/0123456789abcdef" } &&
+      output.metrics["http-504"].source == "log metric filter" && output.metrics["http-504"].statistic == "Sum"
+    )
+    error_message = "Each metric should carry its namespace, name, dimensions, recommended statistic and source"
+  }
+}
+
 run "dashboard_disabled" {
   command = plan
 

@@ -52,13 +52,13 @@ run "cidr_endpoint" {
   }
 
   assert {
-    condition     = length(aws_security_group.current.egress) == 1
+    condition     = length(aws_security_group.current[0].egress) == 1
     error_message = "The security group should have exactly one egress rule"
   }
 
   assert {
     condition = anytrue([
-      for rule in aws_security_group.current.egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.101.0.0/24") && rule.from_port == 22 && rule.to_port == 22 && rule.protocol == "tcp"
+      for rule in aws_security_group.current[0].egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.101.0.0/24") && rule.from_port == 22 && rule.to_port == 22 && rule.protocol == "tcp"
     ])
     error_message = "A cidr endpoint may only send to its own CIDR on its own ports"
   }
@@ -109,7 +109,7 @@ run "https_load_balancer_endpoint" {
 
   assert {
     condition = anytrue([
-      for rule in aws_security_group.current.egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.50.0.0/16") && rule.from_port == 443 && rule.to_port == 443
+      for rule in aws_security_group.current[0].egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.50.0.0/16") && rule.from_port == 443 && rule.to_port == 443
     ])
     error_message = "A load balancer endpoint should send to the egress CIDRs on its port"
   }
@@ -178,10 +178,58 @@ run "rds_endpoint" {
 
   assert {
     condition = anytrue([
-      for rule in aws_security_group.current.egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.0.0.0/8") && rule.from_port == 5432 && rule.to_port == 5432
+      for rule in aws_security_group.current[0].egress : length(rule.cidr_blocks) == 1 && contains(rule.cidr_blocks, "10.0.0.0/8") && rule.from_port == 5432 && rule.to_port == 5432
     ])
     error_message = "An rds endpoint should send to the egress CIDRs on the database port"
   }
+}
+
+run "supplied_security_groups_only" {
+  command = plan
+
+  module {
+    source = "./modules/endpoint"
+  }
+
+  variables {
+    type                  = "cidr"
+    cidr                  = "10.101.0.0/24"
+    port_ranges           = [{ from_port = 22, to_port = 22 }]
+    create_security_group = false
+    security_group_ids    = ["sg-0123456789abcdef0"]
+  }
+
+  assert {
+    condition     = length(aws_security_group.current) == 0
+    error_message = "No security group should be created"
+  }
+
+  assert {
+    condition     = tolist(aws_verifiedaccess_endpoint.current.security_group_ids) == tolist(["sg-0123456789abcdef0"])
+    error_message = "The endpoint should use only the supplied security groups"
+  }
+
+  assert {
+    condition     = output.security_group_id == null
+    error_message = "No security group should be exported"
+  }
+}
+
+run "supplied_security_groups_missing" {
+  command = plan
+
+  module {
+    source = "./modules/endpoint"
+  }
+
+  variables {
+    type                  = "cidr"
+    cidr                  = "10.101.0.0/24"
+    port_ranges           = [{ from_port = 22, to_port = 22 }]
+    create_security_group = false
+  }
+
+  expect_failures = [var.security_group_ids]
 }
 
 run "group_submodule" {

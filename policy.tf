@@ -8,7 +8,7 @@ locals {
       { for name, endpoint in local.endpoints : format("endpoint/%s", name) => endpoint.policy.identity_groups if length(try(endpoint.policy.identity_groups, [])) > 0 },
       ) : key => [
       for id in sort(distinct(ids)) : (
-        var.user_trust_provider.type == "iam-identity-center"
+        local.user_trust_provider_type == "iam-identity-center"
         ? format("context.%s.%s has \"%s\"", local.user_policy_reference, local.user_groups_attribute, id)
         : format("context.%s.%s.contains(\"%s\")", local.user_policy_reference, local.user_groups_attribute, id)
       )
@@ -16,14 +16,14 @@ locals {
   }
 
   ## The verified email condition, only available from IAM Identity Center
-  email_conditions = var.user_trust_provider.type == "iam-identity-center" && var.user_trust_provider.require_verified_email ? [
+  email_conditions = local.user_trust_provider_type == "iam-identity-center" && (local.enable_instance ? var.user_trust_provider.require_verified_email : var.existing_instance.require_verified_email) ? [
     format("context.%s.user.email.verified == true", local.user_policy_reference)
   ] : []
 
   ## The device posture condition applied to sensitive endpoints, specific to each device provider
   device_condition = !local.enable_device_trust ? "" : (
-    var.device_trust_provider.type == "crowdstrike" ? format("context.%s.assessment.overall >= %d", local.device_policy_reference, var.device_trust_provider.crowdstrike_min_score) :
-    var.device_trust_provider.type == "jamf" ? format("[%s].contains(context.%s.risk)", join(", ", [for risk in sort(distinct(var.device_trust_provider.jamf_allowed_risk)) : format("\"%s\"", risk)]), local.device_policy_reference) :
+    local.device_trust_provider.type == "crowdstrike" ? format("context.%s.assessment.overall >= %d", local.device_policy_reference, local.device_trust_provider.crowdstrike_min_score) :
+    local.device_trust_provider.type == "jamf" ? format("[%s].contains(context.%s.risk)", join(", ", [for risk in sort(distinct(local.device_trust_provider.jamf_allowed_risk)) : format("\"%s\"", risk)]), local.device_policy_reference) :
     format("context.%s.device.is_managed == true", local.device_policy_reference)
   )
 

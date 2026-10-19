@@ -333,7 +333,7 @@ Every change follows the same path: edit on a branch, open a pull request, read 
 | Give or remove access | About 10 minutes (policy propagation, 5 to 10 minutes) |
 | Add an application | About 17 minutes (new endpoint) |
 | Change a target IP | As soon as the new target passes its load balancer health checks (a minute or two) |
-| Change alarm thresholds or emails | Immediately; new email recipients must confirm the subscription first |
+| Change alarms or emails | Immediately; new email recipients must confirm the subscription first |
 | Turn an option on or off | Immediately, except new endpoints (17 minutes) and certificates (once the DNS records are published) |
 
 ### Give or remove access
@@ -389,24 +389,37 @@ Edit `targets`:
 
 The plan shows the old target being deregistered and the new one registered. Where you can, target the fixed private IPs of the application's own internal load balancer, so changes behind it need no change here.
 
-### Change alarm thresholds or emails
+### Change alarms or emails
 
-Edit the `alarms` block. Thresholds are optional; leave out any you do not change:
+Edit the `alarms` block. Every alarm is on by default with the thresholds in [operations](operations.md#alarms); `rules` turns one off or changes it, keyed by the alarm, and leaves the rest as they are:
 
 ```hcl
   alarms = {
     email_addresses    = ["platform-team@example.com", "on-call@example.com"]
     pipeline_role_name = "verified-access-pipeline"
-    thresholds = {
-      access_denied           = 50 # denied requests in five minutes (default 20)
-      http_504                = 5  # HTTP 504s in five minutes (default 5)
-      logging_stopped_hours   = 1  # hours without access logs (default 1)
-      no_access_allowed_hours = 72 # hours without a successful connection (default 24)
+    rules = {
+      access-denied                   = { threshold = 50 }          # denied requests in five minutes (default 20)
+      no-access-allowed               = { evaluation_periods = 72 } # hours without a successful connection (default 24)
+      logging-stopped                 = { enabled = false }         # a quiet environment: no traffic means no logs
+      "host-a-ssh/no-healthy-targets" = { evaluation_periods = 5 }  # one host restarts slowly (default 2 minutes)
     }
   }
 ```
 
-The alarms are described in [operations](operations.md#alarms).
+To alarm on something the module does not watch, add a custom alarm on any key of the `metrics` output (`terraform output metrics` lists them), for example more than 20 open connections through the central load balancer:
+
+```hcl
+    custom = {
+      many-sessions = {
+        metric              = "load-balancer-active-flow-count"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 20
+        statistic           = "Maximum"
+      }
+    }
+```
+
+The plan fails with a clear message for an unknown alarm key, a metric that does not exist in the deployment, or an alarm whose log derived metric is not created (`access_logs.cloudwatch.metric_filters`). Everything else, including choosing metrics and streaming them, is in [operations](operations.md#customising-the-alarms).
 
 ### Several hosts on one port
 
@@ -476,7 +489,7 @@ Activate the tag keys as cost allocation tags in the billing console to see them
 
 ### Send alarms to PagerDuty or Slack
 
-Alarms go to one SNS topic (the module's, or yours with `alarms.sns_topic_arn`). To page an on-call tool as well, subscribe it to an SNS topic of its own and add that topic to `alarms.additional_action_arns`: every alarm notifies it when it fires and when it recovers.
+Alarms go to one SNS topic (the module's, or yours with `alarms.create_sns_topic = false` and `alarms.sns_topic_arn`). To page an on-call tool as well, subscribe it to an SNS topic of its own and add that topic to `alarms.additional_action_arns`: every alarm notifies it when it fires and when it recovers.
 
 - **PagerDuty:** create an Amazon CloudWatch integration on the PagerDuty service, and subscribe its integration URL (HTTPS) to an SNS topic.
 - **Slack or Microsoft Teams:** configure AWS Chatbot (Amazon Q Developer in chat applications) for the channel, with an SNS topic.
@@ -485,7 +498,9 @@ Alarms go to one SNS topic (the module's, or yours with `alarms.sns_topic_arn`).
   alarms = {
     email_addresses        = ["platform-team@example.com"]
     additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty", "arn:aws:sns:eu-west-2:111111111111:slack-alerts"]
-    disabled               = ["no-access-allowed"] # not useful in a quiet environment
+    rules = {
+      no-access-allowed = { enabled = false } # not useful in a quiet environment
+    }
   }
 ```
 
@@ -500,12 +515,17 @@ Set an option to turn it on; remove it (or set it to `null`) to turn it off.
 | Central load balancer | `topology = "hub"` | Off is `"single-vpc"`; endpoints with `targets` need `hub` |
 | Fixed load balancer addresses | `load_balancer = { private_ips = { "subnet-0123456789abcdef0" = "10.10.0.100", "subnet-0123456789abcdef1" = "10.10.1.100" } }` | Changing them **replaces** the load balancer |
 | Certificate | `certificate = { domain_name = "example.com" }` | Publish the validation records after the apply |
-| Alarms | `alarms = { email_addresses = ["platform-team@example.com"] }` | Need `access_logs.cloudwatch` |
+| Alarms | `alarms = { email_addresses = ["platform-team@example.com"] }` | Need `access_logs.cloudwatch`; `alarms.rules` turns single alarms off |
 | Dashboard | `dashboard = {}` | Needs `access_logs.cloudwatch` |
-| Metric stream | `metric_stream = { firehose_arn = "...", role_arn = "..." }` | Needs a Firehose delivery stream you own |
+| Metric stream | `metric_stream = { firehose_arn = "...", create_role = true }`, or `role_arn = "..."` for your own role | Needs a Firehose delivery stream you own; `include = ["access-denied", ...]` streams only those metrics |
 | WAF | `waf = { create = true }`, or `waf = { web_acl_arn = "..." }` for your own web ACL | Web applications only |
-| Log archive copy | `access_logs.s3 = { bucket_name = "log-archive-verified-access", bucket_owner = "111111111111" }` | The bucket is owned elsewhere |
-| An existing log group | `access_logs.cloudwatch = { create_log_group = false, log_group_name = "/central/verified-access" }` | Its retention and encryption are owned elsewhere |
+| Log archive copy | `access_logs.s3 = { bucket_name = "log-archive-verified-access", bucket_owner = "111111111111" }` | The bucket is owned elsewhere (for example the log archive account) |
+| A bucket created by the module | `access_logs.s3 = { create = true, retention_days = 365, object_lock = { days = 365 } }` | Same account only; Object Lock is irreversible ([tear down](operations.md#tear-down)) |
+| A Firehose stream created by the module | `access_logs.firehose = { create = true, destination_bucket_arn = "arn:aws:s3:::example-siem-intake" }` | S3 destination only; or name your own stream: `access_logs.firehose = { delivery_stream_name = "siem" }` |
+| Customer managed keys | `create_kms_key = true` (Verified Access) and `access_logs.cloudwatch.create_kms_key = true` (log group) | Or supply `kms_key_arn` in either place |
+| Your own security groups | `create_security_group = false, security_group_ids = ["sg-0123456789abcdef0"]` on an endpoint, or in `load_balancer` | Your rules must allow the traffic the module's would ([how it works](how-it-works.md#create-or-bring-your-own)) |
+| An existing instance | `existing_instance = { id = "vai-0123456789abcdef0", user_policy_reference_name = "idc" }` instead of `user_trust_provider` | The module adds only groups, endpoints and the central NLB; leave `access_logs`, `waf` and `device_trust_provider` to the instance owner |
+| An existing log group | `access_logs.cloudwatch = { create = false, log_group_name = "/central/verified-access" }` | Its retention and encryption are owned elsewhere |
 | Route 53 records | `dns = { zone_id = "Z0123456789ABCDEFGHIJ" }` | Certificate validation records and application CNAMEs |
 | FIPS endpoints | `fips_enabled = true` | US, Canada and GovCloud regions only; changing it **replaces** the instance and everything in it |
 

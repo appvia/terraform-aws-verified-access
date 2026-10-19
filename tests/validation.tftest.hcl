@@ -1,4 +1,4 @@
-## Input validation tests: every rule (V1-V64) has a run proving invalid input is rejected at plan time.
+## Input validation tests: every rule (V1-V82) has a run proving invalid input is rejected at plan time.
 ## Each invalid run breaks exactly one rule against the valid baseline below.
 
 mock_provider "aws" {
@@ -1151,18 +1151,80 @@ run "invalid_alarms_without_metric_filters" {
   expect_failures = [var.alarms]
 }
 
-run "invalid_alarm_threshold" {
+run "invalid_alarm_rule_window" {
   command = plan
 
   variables {
     alarms = {
-      thresholds = {
-        no_access_allowed_hours = 200
+      rules = {
+        no-access-allowed = { evaluation_periods = 200 }
       }
     }
   }
 
   expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_rule_period" {
+  command = plan
+
+  variables {
+    alarms = {
+      rules = { http-504 = { period = 45 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_rule_threshold" {
+  command = plan
+
+  variables {
+    alarms = {
+      rules = { access-denied = { threshold = -1 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_rule_treat_missing_data" {
+  command = plan
+
+  variables {
+    alarms = {
+      rules = { http-504 = { treat_missing_data = "zero" } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_without_its_metric_filter" {
+  command = plan
+
+  variables {
+    alarms = {}
+    access_logs = {
+      cloudwatch = { metric_filters = ["access-allowed", "http-504"] }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "valid_alarm_turned_off_without_its_metric_filter" {
+  command = plan
+
+  variables {
+    alarms = {
+      rules = { access-denied = { enabled = false } }
+    }
+    access_logs = {
+      cloudwatch = { metric_filters = ["access-allowed", "http-504"] }
+    }
+  }
 }
 
 run "invalid_alarm_email" {
@@ -1182,8 +1244,9 @@ run "invalid_alarm_key_with_existing_topic" {
 
   variables {
     alarms = {
-      sns_topic_arn = "arn:aws:sns:eu-west-2:111111111111:existing"
-      kms_key_arn   = "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
+      create_sns_topic = false
+      sns_topic_arn    = "arn:aws:sns:eu-west-2:111111111111:existing"
+      kms_key_arn      = "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
     }
   }
 
@@ -1208,8 +1271,9 @@ run "invalid_alarm_created_key_with_existing_topic" {
 
   variables {
     alarms = {
-      sns_topic_arn  = "arn:aws:sns:eu-west-2:111111111111:existing"
-      create_kms_key = true
+      create_sns_topic = false
+      sns_topic_arn    = "arn:aws:sns:eu-west-2:111111111111:existing"
+      create_kms_key   = true
     }
   }
 
@@ -1225,7 +1289,7 @@ run "invalid_dashboard_without_metric_filters" {
     dashboard = {}
     access_logs = {
       cloudwatch = {
-        enable_metric_filters = false
+        metric_filters = ["access-allowed", "access-denied"]
       }
     }
   }
@@ -1985,7 +2049,7 @@ run "invalid_existing_log_group_without_name" {
   variables {
     access_logs = {
       cloudwatch = {
-        create_log_group = false
+        create = false
       }
     }
   }
@@ -1993,50 +2057,58 @@ run "invalid_existing_log_group_without_name" {
   expect_failures = [var.access_logs]
 }
 
-## V61-V63: alarm customisation
+## V61-V63: alarm rules and actions
 
-run "invalid_alarm_disabled_key" {
+run "valid_alarm_rules" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    alarms = {
+      rules = {
+        http-504                      = { threshold = 10, period = 60, evaluation_periods = 5 }
+        no-healthy-targets            = { evaluation_periods = 3 }
+        "demo-ssh/no-healthy-targets" = { enabled = false }
+        changed-outside-pipeline      = { enabled = false }
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+        }
+      }
+    }
+  }
+}
+
+run "invalid_alarm_rule_key" {
   command = plan
 
   variables {
     alarms = {
-      disabled = ["http-500"]
+      rules = { http-500 = { threshold = 1 } }
     }
   }
 
   expect_failures = [var.alarms]
 }
 
-run "invalid_alarm_override_key" {
+run "invalid_alarm_rule_endpoint_without_targets" {
   command = plan
 
   variables {
     alarms = {
-      overrides = { http-500 = { threshold = 1 } }
-    }
-  }
-
-  expect_failures = [var.alarms]
-}
-
-run "invalid_alarm_override_period" {
-  command = plan
-
-  variables {
-    alarms = {
-      overrides = { http-504 = { period = 45 } }
-    }
-  }
-
-  expect_failures = [var.alarms]
-}
-
-run "invalid_alarm_override_window" {
-  command = plan
-
-  variables {
-    alarms = {
-      overrides = { no-access-allowed = { period = 3600, evaluation_periods = 169 } }
+      rules = { "demo-ssh/no-healthy-targets" = { enabled = false } }
     }
   }
 
@@ -2067,4 +2139,776 @@ run "invalid_load_balancer_rule_quota" {
   }
 
   expect_failures = [var.load_balancer]
+}
+
+## V65-V69: access log destinations the module creates
+
+run "valid_created_access_log_destinations" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = { create_kms_key = true }
+      s3 = {
+        create      = true
+        object_lock = { mode = "GOVERNANCE", days = 30 }
+        kms_key_arn = "arn:aws:kms:eu-west-2:111111111111:key/11111111-1111-1111-1111-111111111111"
+      }
+      firehose = {
+        create                 = true
+        destination_bucket_arn = "arn:aws:s3:::example-siem-intake"
+      }
+    }
+  }
+}
+
+run "invalid_s3_without_bucket_or_create" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { prefix = "verified-access" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_created_with_bucket_owner" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { create = true, bucket_owner = "111111111111" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_object_lock_longer_than_retention" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { create = true, retention_days = 30, object_lock = { days = 31 } }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_object_lock_mode" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { create = true, object_lock = { mode = "STRICT", days = 30 } }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_object_lock_on_existing_bucket" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { bucket_name = "log-archive-verified-access", object_lock = { days = 30 } }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_created_default_name_too_long" {
+  command = plan
+
+  variables {
+    name_prefix = "a-very-long-name-prefix"
+    name        = "and-a-long-environment-name"
+    access_logs = {
+      s3 = { create = true }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_s3_created_bucket_name" {
+  command = plan
+
+  variables {
+    access_logs = {
+      s3 = { create = true, bucket_name = "Not_A_Bucket" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "valid_existing_firehose" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = { delivery_stream_name = "siem" }
+    }
+  }
+}
+
+run "invalid_firehose_without_name_or_create" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = {}
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_firehose_existing_with_destination" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = { delivery_stream_name = "siem", destination_bucket_arn = "arn:aws:s3:::example-siem-intake" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_firehose_name" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = { delivery_stream_name = "siem/intake" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_firehose_destination" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = { create = true, destination_bucket_arn = "example-siem-intake" }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_firehose_buffering" {
+  command = plan
+
+  variables {
+    access_logs = {
+      firehose = { create = true, destination_bucket_arn = "arn:aws:s3:::example-siem-intake", buffering_size = 129 }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_log_group_key_created_and_supplied" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = {
+        create_kms_key = true
+        kms_key_arn    = "arn:aws:kms:eu-west-2:111111111111:key/11111111-1111-1111-1111-111111111111"
+      }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_log_group_key_for_existing_log_group" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = {
+        create         = false
+        log_group_name = "/central/verified-access"
+        create_kms_key = true
+      }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+## V70: the Verified Access key
+
+run "valid_created_kms_key" {
+  command = plan
+
+  variables {
+    create_kms_key = true
+  }
+}
+
+run "invalid_kms_key_created_and_supplied" {
+  command = plan
+
+  variables {
+    create_kms_key = true
+    kms_key_arn    = "arn:aws:kms:eu-west-2:111111111111:key/11111111-1111-1111-1111-111111111111"
+  }
+
+  expect_failures = [var.kms_key_arn]
+}
+
+## V71: endpoint security groups
+
+run "valid_endpoint_supplied_security_groups" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type                  = "cidr"
+            cidr                  = "10.101.0.0/24"
+            port_ranges           = [{ from_port = 22, to_port = 22 }]
+            create_security_group = false
+            security_group_ids    = ["sg-0123456789abcdef0"]
+          }
+        }
+      }
+    }
+  }
+}
+
+run "invalid_endpoint_without_security_groups" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type                  = "cidr"
+            cidr                  = "10.101.0.0/24"
+            port_ranges           = [{ from_port = 22, to_port = 22 }]
+            create_security_group = false
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_egress_without_module_security_group" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type                  = "load-balancer"
+            load_balancer_arn     = "arn:aws:elasticloadbalancing:eu-west-2:111111111111:loadbalancer/net/tenant/abc"
+            port_ranges           = [{ from_port = 22, to_port = 22 }]
+            create_security_group = false
+            security_group_ids    = ["sg-0123456789abcdef0"]
+            egress_cidr_blocks    = ["10.50.0.0/16"]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_security_group_id" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type               = "cidr"
+            cidr               = "10.101.0.0/24"
+            port_ranges        = [{ from_port = 22, to_port = 22 }]
+            security_group_ids = ["tenant-sg"]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+## V72: load balancer security groups
+
+run "valid_load_balancer_supplied_security_groups" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    load_balancer = {
+      create_security_group = false
+      security_group_ids    = ["sg-0123456789abcdef0"]
+    }
+  }
+}
+
+run "invalid_load_balancer_without_security_groups" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    load_balancer = {
+      create_security_group = false
+    }
+  }
+
+  expect_failures = [var.load_balancer]
+}
+
+run "invalid_load_balancer_security_group_id" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    load_balancer = {
+      security_group_ids = ["nlb-sg"]
+    }
+  }
+
+  expect_failures = [var.load_balancer]
+}
+
+## V73: metric stream role
+
+run "valid_metric_stream_created_role" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      create_role  = true
+    }
+  }
+}
+
+run "invalid_metric_stream_created_and_supplied_role" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+      create_role  = true
+    }
+  }
+
+  expect_failures = [var.metric_stream]
+}
+
+run "invalid_metric_stream_without_role" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+    }
+  }
+
+  expect_failures = [var.metric_stream]
+}
+
+## V74-V76: existing instance
+
+run "valid_existing_instance" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+  }
+}
+
+run "invalid_existing_instance_and_user_trust_provider" {
+  command = plan
+
+  variables {
+    access_logs = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_neither_instance_nor_user_trust_provider" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_id" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "instance-1"
+      user_policy_reference_name = "idc"
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_with_device_trust_provider" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+    device_trust_provider = {
+      type      = "crowdstrike"
+      tenant_id = "tenant"
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_with_waf" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+    waf = { create = true }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_with_fips" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+    fips_enabled = true
+  }
+
+  expect_failures = [var.existing_instance, check.fips_region]
+}
+
+run "invalid_existing_instance_with_access_logs" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "invalid_existing_instance_user_trust_provider_type" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_trust_provider_type   = "saml"
+      user_policy_reference_name = "idc"
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_policy_reference_name" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "Not-Valid"
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+run "invalid_existing_instance_device_type" {
+  command = plan
+
+  variables {
+    user_trust_provider = null
+    access_logs         = null
+    existing_instance = {
+      id                         = "vai-0123456789abcdef0"
+      user_policy_reference_name = "idc"
+      device_trust_provider      = { type = "intune" }
+    }
+  }
+
+  expect_failures = [var.existing_instance]
+}
+
+## V77-V82: alarm rules, custom alarms, metric filters, metric stream and the alarm topic
+
+run "invalid_pipeline_rule_threshold" {
+  command = plan
+
+  variables {
+    alarms = {
+      pipeline_role_name = "pipeline"
+      rules              = { changed-outside-pipeline = { threshold = 1 } }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "valid_custom_alarm" {
+  command = plan
+
+  variables {
+    alarms = {
+      custom = {
+        denied-burst = {
+          metric              = "access-denied"
+          comparison_operator = "GreaterThanThreshold"
+          threshold           = 100
+          statistic           = "Sum"
+          period              = 60
+          evaluation_periods  = 2
+          treat_missing_data  = "notBreaching"
+        }
+      }
+    }
+  }
+}
+
+run "invalid_custom_alarm_operator" {
+  command = plan
+
+  variables {
+    alarms = {
+      custom = {
+        denied-burst = { metric = "access-denied", comparison_operator = "GreaterThan", threshold = 100 }
+      }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_custom_alarm_name_clash" {
+  command = plan
+
+  variables {
+    alarms = {
+      custom = {
+        http-504 = { metric = "http-504", comparison_operator = "GreaterThanThreshold", threshold = 1 }
+      }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_custom_alarm_without_its_metric_filter" {
+  command = plan
+
+  variables {
+    alarms = {
+      custom = {
+        server-errors = { metric = "http-5xx", comparison_operator = "GreaterThanThreshold", threshold = 10 }
+      }
+    }
+    access_logs = {
+      cloudwatch = { metric_filters = ["access-allowed", "access-denied", "http-504"] }
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_custom_alarm_metric" {
+  command = plan
+
+  variables {
+    alarms = {
+      custom = {
+        connections = { metric = "demo-ssh/unhealthy-host-count", comparison_operator = "GreaterThanThreshold", threshold = 50 }
+      }
+    }
+  }
+
+  expect_failures = [aws_cloudwatch_metric_alarm.custom]
+}
+
+run "valid_metric_filters" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = { metric_filters = ["access-denied"] }
+    }
+  }
+}
+
+run "invalid_metric_filter_key" {
+  command = plan
+
+  variables {
+    access_logs = {
+      cloudwatch = { metric_filters = ["denied-http"] }
+    }
+  }
+
+  expect_failures = [var.access_logs]
+}
+
+run "valid_metric_stream_include" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+      include      = ["access-denied", "incoming-log-events"]
+    }
+  }
+}
+
+run "invalid_metric_stream_include_empty" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+      include      = []
+    }
+  }
+
+  expect_failures = [var.metric_stream]
+}
+
+run "invalid_metric_stream_include_unknown" {
+  command = plan
+
+  variables {
+    metric_stream = {
+      firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/observability"
+      role_arn     = "arn:aws:iam::111111111111:role/metric-stream"
+      include      = ["demo-ssh/healthy-host-count"]
+    }
+  }
+
+  expect_failures = [aws_cloudwatch_metric_stream.current]
+}
+
+run "valid_existing_alarm_topic" {
+  command = plan
+
+  variables {
+    alarms = {
+      create_sns_topic = false
+      sns_topic_arn    = "arn:aws:sns:eu-west-2:111111111111:existing"
+    }
+  }
+}
+
+run "invalid_existing_alarm_topic_without_create_false" {
+  command = plan
+
+  variables {
+    alarms = {
+      sns_topic_arn = "arn:aws:sns:eu-west-2:111111111111:existing"
+    }
+  }
+
+  expect_failures = [var.alarms]
+}
+
+run "invalid_alarm_topic_neither" {
+  command = plan
+
+  variables {
+    alarms = {
+      create_sns_topic = false
+    }
+  }
+
+  expect_failures = [var.alarms]
 }

@@ -6,7 +6,7 @@ Running Verified Access deployed with this module through a deployment repositor
 
 ### What Verified Access publishes
 
-**No CloudWatch metrics.** Verified Access is not in AWS's list of services that publish CloudWatch metrics; its monitoring documentation lists only **access logs** and **CloudTrail**. Every metric is therefore derived from the access logs, or comes from a neighbouring service (the central NLB, CloudWatch Logs itself, CloudTrail, AWS Health).
+**No CloudWatch metrics.** Verified Access is not in AWS's [list of services that publish CloudWatch metrics](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/aws-services-cloudwatch-metrics.html); its [monitoring documentation](https://docs.aws.amazon.com/verified-access/latest/ug/monitoring-overview.html) lists only **access logs** and **CloudTrail**. Every metric is therefore derived from the access logs, or comes from a neighbouring service (the central NLB, CloudWatch Logs itself, CloudTrail, AWS Health).
 
 ### The four questions
 
@@ -19,73 +19,149 @@ Running Verified Access deployed with this module through a deployment repositor
 
 ### Log derived metrics
 
-Namespace `VerifiedAccess/<name>` (output `metric_namespace`), created when CloudWatch logging is enabled (`access_logs.cloudwatch.enable_metric_filters`, default on), together with the saved queries. HTTP and TCP events have different shapes, so each metric has a filter per shape.
+Namespace `VerifiedAccess/<name>` (output `metric_namespace`), created when CloudWatch logging is enabled (`access_logs.cloudwatch`). All four are created by default; `access_logs.cloudwatch.metric_filters` chooses which (`null` all, `[]` none). The saved queries are separate (`access_logs.cloudwatch.create_queries`, default on). HTTP and TCP events have different shapes, so each metric has a filter per shape.
 
-| Metric | HTTP filter | TCP filter |
-| --- | --- | --- |
-| `AccessAllowed` | `$.actor.authorizations[0].decision = "Allow"` | `$.data.authorizations[0].decision = "Allow"` |
-| `AccessDenied` | `$.actor.authorizations[0].decision != "Allow"` | `$.data.authorizations[0].decision != "Allow"` |
-| `Http504` | `$.http_response.code = 504` | n/a |
-| `Http5xx` | `$.http_response.code >= 500` | n/a |
+| Metric key | Metric | HTTP filter | TCP filter |
+| --- | --- | --- | --- |
+| `access-allowed` | `AccessAllowed` | `$.actor.authorizations[0].decision = "Allow"` | `$.data.authorizations[0].decision = "Allow"` |
+| `access-denied` | `AccessDenied` | `$.actor.authorizations[0].decision != "Allow"` | `$.data.authorizations[0].decision != "Allow"` |
+| `http-504` | `Http504` | `$.http_response.code = 504` | n/a |
+| `http-5xx` | `Http5xx` | `$.http_response.code >= 500` | n/a |
 
 Confirmed with real traffic: a denied TCP connection logs `"decision": "Deny"`, `"status": "Failure"`, `"status_code": "403"`; 30 denied attempts produced `AccessDenied = 30`, and allowed sessions were counted in `AccessAllowed`.
 
-With `topology = "hub"`, the central NLB also publishes the standard `AWS/NetworkELB` metrics (`HealthyHostCount`, `UnHealthyHostCount` per target group), and CloudWatch Logs publishes `IncomingLogEvents` for the log group.
+Plan time checks keep the choices consistent: an alarm (built in or custom) on a log derived metric needs that metric's filter, the dashboard needs all four, and the default metric stream needs at least one. Choosing fewer filters, for example to keep only what Dash0 shows:
+
+```hcl
+  access_logs = {
+    cloudwatch = {
+      metric_filters = ["access-allowed", "access-denied"] # no HTTP endpoints, so no HTTP error metrics
+    }
+  }
+
+  alarms = {
+    rules = {
+      http-504 = { enabled = false } # its metric is not created
+    }
+  }
+```
+
+### Metrics available
+
+Output `metrics` lists every metric the module makes available in a deployment, keyed as below, each with its `namespace`, `metric_name`, `dimensions`, recommended `statistic`, `source` and `description`. Use the keys in `alarms.custom` and `metric_stream.include`. Endpoint metrics exist per load-balancer endpoint with `targets` (`topology = "hub"`), keyed `<endpoint>/<metric>`.
+
+| Key | Namespace | Metric | Dimensions | Source | What it tells you | Statistic |
+| --- | --- | --- | --- | --- | --- | --- |
+| `access-allowed` | `VerifiedAccess/<name>` | `AccessAllowed` | none | log metric filter | Requests and connections allowed; zero for a day means nobody can get in | Sum |
+| `access-denied` | `VerifiedAccess/<name>` | `AccessDenied` | none | log metric filter | Requests and connections denied; a spike is a bad policy change or probing | Sum |
+| `http-504` | `VerifiedAccess/<name>` | `Http504` | none | log metric filter | Applications slower than the 60 second Verified Access limit | Sum |
+| `http-5xx` | `VerifiedAccess/<name>` | `Http5xx` | none | log metric filter | Server errors from the applications or Verified Access | Sum |
+| `incoming-log-events` | `AWS/Logs` | `IncomingLogEvents` | `LogGroupName` | AWS/Logs | Access log events arriving; none means logging stopped or no usage | Sum |
+| `incoming-bytes` | `AWS/Logs` | `IncomingBytes` | `LogGroupName` | AWS/Logs | Access log volume, which drives the ingestion cost | Sum |
+| `load-balancer-active-flow-count` | `AWS/NetworkELB` | `ActiveFlowCount` | `LoadBalancer` | AWS/NetworkELB | Concurrent connections through the central NLB | Maximum |
+| `load-balancer-new-flow-count` | `AWS/NetworkELB` | `NewFlowCount` | `LoadBalancer` | AWS/NetworkELB | New connections through the central NLB | Sum |
+| `load-balancer-processed-bytes` | `AWS/NetworkELB` | `ProcessedBytes` | `LoadBalancer` | AWS/NetworkELB | Traffic through the central NLB, both directions | Sum |
+| `load-balancer-tcp-client-reset-count` | `AWS/NetworkELB` | `TCP_Client_Reset_Count` | `LoadBalancer` | AWS/NetworkELB | Resets sent by the client side (Verified Access) | Sum |
+| `load-balancer-tcp-target-reset-count` | `AWS/NetworkELB` | `TCP_Target_Reset_Count` | `LoadBalancer` | AWS/NetworkELB | Resets sent by targets: a service refusing or dropping connections | Sum |
+| `load-balancer-tcp-elb-reset-count` | `AWS/NetworkELB` | `TCP_ELB_Reset_Count` | `LoadBalancer` | AWS/NetworkELB | Resets generated by the NLB, for example idle timeouts | Sum |
+| `load-balancer-port-allocation-error-count` | `AWS/NetworkELB` | `PortAllocationErrorCount` | `LoadBalancer` | AWS/NetworkELB | Dropped connections: address translation ran out of ports for a target | Sum |
+| `<endpoint>/healthy-host-count` | `AWS/NetworkELB` | `HealthyHostCount` | `LoadBalancer`, `TargetGroup` | AWS/NetworkELB | Healthy targets for the endpoint; below 1 it is unreachable | Minimum |
+| `<endpoint>/unhealthy-host-count` | `AWS/NetworkELB` | `UnHealthyHostCount` | `LoadBalancer`, `TargetGroup` | AWS/NetworkELB | Unhealthy targets for the endpoint; above 0 it is degraded | Maximum |
+
+The log derived metrics appear only when their filter is created, the `AWS/Logs` metrics with `access_logs.cloudwatch`, and the `AWS/NetworkELB` metrics with `topology = "hub"`. The NLB metric names, dimensions and statistics are from the [NLB CloudWatch metrics](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-cloudwatch-metrics.html) documentation; the NLB reports `ProcessedBytes`, the reset counts and the flow counts (`ActiveFlowCount`, `NewFlowCount`) per load balancer only, not per target group (confirmed on a live deployment), and reports nothing while no traffic flows. Connections per application are therefore not available as a metric; the access logs record every connection with its endpoint.
 
 ### Alarms
 
-Module option `alarms`, with starting thresholds. Every customer needs the same alarm set; only who is paged and the thresholds differ, and those are inputs. Set `alarms` (requires `access_logs.cloudwatch` with metric filters) and the module creates A1 to A7, all to one SNS topic: `verified-access-<name>-alarms` with a topic policy allowing CloudWatch and EventBridge in this account, or your own topic with `alarms.sns_topic_arn`. The created topic can be encrypted with a key the module creates (`alarms.create_kms_key = true`) or an existing key (`alarms.kms_key_arn`, whose key policy must allow both services); set at most one of them. `alarms.email_addresses` subscribes recipients, who must confirm their SNS subscription before they receive anything. A1 and A2 are created per endpoint with `targets` when `topology = "hub"`; A7 is created when `alarms.pipeline_role_name` is set.
+Module option `alarms`, with starting thresholds. Every customer needs the same alarm set; who is paged, which alarms and their thresholds differ, and those are inputs. Set `alarms` and the module creates the alarms below, all notifying one SNS topic: `<name_prefix>-<name>-alarms` with a topic policy allowing CloudWatch and EventBridge in this account, or your own topic (`create_sns_topic = false` with `sns_topic_arn`). The created topic can be encrypted with a key the module creates (`alarms.create_kms_key = true`) or an existing key (`alarms.kms_key_arn`, whose key policy must allow both services); set at most one of them. `alarms.email_addresses` subscribes recipients, who must confirm their SNS subscription before they receive anything. The log derived alarms need `access_logs.cloudwatch` with their metric filter (the default creates them all).
 
-| # | Alarm | Threshold | Severity | Why |
-| --- | --- | --- | --- | --- |
-| A1 | NLB **no healthy targets** (per application) | `HealthyHostCount` < 1 for 2 x 1 minute, missing data breaching | Critical | Application unreachable |
-| A2 | NLB **unhealthy targets** (per application) | `UnHealthyHostCount` > 0 for 5 x 1 minute | Warning | Tenant service degraded |
-| A3 | **HTTP 504s** | `Http504` >= 5 in 5 minutes (`thresholds.http_504`) | Warning | Applications slower than the 60 second Verified Access idle timeout |
-| A4 | **Denial spike** | `AccessDenied` >= 20 in 5 minutes (`thresholds.access_denied`) | Warning | A bad policy change, or probing (proven in testing) |
-| A5 | **Logging stopped** | `IncomingLogEvents` < 1 for 1 hour (`thresholds.logging_stopped_hours`), missing data breaching | Warning | Audit trail broken, or no usage (check A6) |
-| A6 | **No successful access** | `AccessAllowed` < 1 for 24 hours (`thresholds.no_access_allowed_hours`), missing data breaching | Info | A possible outage nobody reported |
-| A7 | **Changed outside the pipeline** | EventBridge: any non read-only `*VerifiedAccess*` API call by a principal other than the pipeline role (`pipeline_role_name`), or by an IAM user or the root user | Critical (security) | Protects the [approval gate](security.md#the-approval-gate) |
-| A8 | **AWS Health** event for Verified Access | EventBridge `aws.health` | Warning | **Not built:** the Health event codes for Verified Access are not documented; add once confirmed |
+| # | Key | Default | Severity | What it means | What to do |
+| --- | --- | --- | --- | --- | --- |
+| A1 | `no-healthy-targets` (per endpoint with `targets`) | `HealthyHostCount` (Minimum) < 1, period 60, 2 evaluation periods, missing data breaching | Critical | The application is unreachable through the central NLB | Check the target is running and listening, its security group allows the hub subnets, and the transit gateway route ([troubleshooting](#troubleshooting)) |
+| A2 | `unhealthy-targets` (per endpoint with `targets`) | `UnHealthyHostCount` (Maximum) > 0, period 60, 5 evaluation periods | Warning | Some targets fail their health check: the service is degraded | Find the failing target in the target group; check its health check port and path |
+| A3 | `http-504` | `Http504` (Sum) >= 5, period 300, 1 evaluation period | Warning | Applications slower than the 60 second Verified Access idle timeout | Ask the tenant to speed up or stream the slow requests; Verified Access cannot wait longer |
+| A4 | `access-denied` | `AccessDenied` (Sum) >= 20, period 300, 1 evaluation period | Warning | A bad policy change, or probing (proven in testing) | Run the `denied-requests` query: one user after a policy change means a policy fix; many sources means probing |
+| A5 | `logging-stopped` | `IncomingLogEvents` (Sum) < 1, period 3600, 1 evaluation period, missing data breaching | Warning | Audit trail broken, or no usage (check A6) | Check the instance logging configuration and the log group; in a quiet environment, turn it off or lengthen it |
+| A6 | `no-access-allowed` | `AccessAllowed` (Sum) < 1, period 3600, 24 evaluation periods, missing data breaching | Info | Nobody was allowed in for a day: a possible outage nobody reported | Try to connect; check the identity provider and the recent policy changes |
+| A7 | `changed-outside-pipeline` (only with `pipeline_role_name`) | EventBridge: any non read-only `*VerifiedAccess*` API call by a principal other than the pipeline role, or by an IAM user or the root user | Critical (security) | Someone bypassed the [approval gate](security.md#the-approval-gate) | Find the caller in CloudTrail; revert the change through the pipeline |
+| A8 | AWS Health event for Verified Access | EventBridge `aws.health` | Warning | | **Not built:** the Health event codes for Verified Access are not documented; add once confirmed |
 
-Thresholds must be at least 1, and the hour thresholds at most 168 (seven days). Tune after real usage: A5 and A6 fire in quiet environments (no traffic means no logs), which is expected in a demo.
+Tune after real usage: A5 and A6 fire in quiet environments (no traffic means no logs), which is expected in a demo.
 
 ### Customising the alarms
 
-Every alarm has a key: `http-504` (A3), `access-denied` (A4), `logging-stopped` (A5), `no-access-allowed` (A6), and per endpoint with targets `no-healthy-targets` (A1) and `unhealthy-targets` (A2). The keys are checked at plan time.
+`alarms.rules` turns any alarm off or changes its settings, keyed by the alarm key above. A rule keyed by `no-healthy-targets` or `unhealthy-targets` applies to every endpoint; key one endpoint as `<endpoint>/no-healthy-targets` to override it alone (it wins over the rule for every endpoint). Unset settings keep the defaults, so `alarms = { email_addresses = [...] }` creates exactly the table above. The keys are checked at plan time.
 
 | Setting | What it does | Example |
 | --- | --- | --- |
-| `alarms.disabled` | Does not create the alarms with these keys | `["no-access-allowed"]` in a quiet environment |
-| `alarms.overrides` | Sets the `period` (seconds: 10, 30 or a multiple of 60), `evaluation_periods` and `threshold` of the alarms with a key; wins over `thresholds`, and period times evaluation periods must be at most seven days | `{ no-healthy-targets = { evaluation_periods = 5 } }` |
+| `alarms.rules.<key>.enabled` | `false` does not create the alarm (for `changed-outside-pipeline`, the EventBridge rule; this is the only setting it takes) | `no-access-allowed = { enabled = false }` in a quiet environment |
+| `alarms.rules.<key>.threshold`, `period`, `evaluation_periods`, `treat_missing_data` | Change the alarm; period in seconds (10, 30 or a multiple of 60), period times evaluation periods at most seven days | `http-504 = { threshold = 3, period = 60, evaluation_periods = 5 }` |
+| `alarms.custom.<name>` | Adds an alarm `<name_prefix>-<name>-<name>` on any key of the `metrics` output, notifying the same actions | see below |
 | `alarms.additional_action_arns` | Also notifies these ARNs on alarm and on recovery, for example an SNS topic integrated with PagerDuty or AWS Chatbot | `["arn:aws:sns:eu-west-2:111111111111:pagerduty"]` |
+
+Turn one alarm off, change a threshold, and override one endpoint:
 
 ```hcl
   alarms = {
     email_addresses        = ["platform-team@example.com"]
     additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty"]
-    disabled               = ["no-access-allowed"]
-    overrides = {
-      http-504           = { period = 60, evaluation_periods = 5, threshold = 3 } # 3 or more per minute, for 5 minutes
-      no-healthy-targets = { evaluation_periods = 5 }                              # ride out target restarts
+    rules = {
+      no-access-allowed                = { enabled = false }                                    # a quiet environment
+      http-504                         = { threshold = 3, period = 60, evaluation_periods = 5 } # 3 or more a minute, for 5 minutes
+      no-healthy-targets               = { evaluation_periods = 5 }                             # ride out target restarts
+      "tenant-a-ssh/unhealthy-targets" = { enabled = false }                                    # a single host: A1 covers it
     }
   }
 ```
 
-The defaults (period and evaluation periods) are those in the table above. A7 is an EventBridge rule rather than a CloudWatch alarm, so it is not affected by these settings and notifies only the alarm topic.
+Add a custom alarm on any metric the module makes available:
+
+```hcl
+  alarms = {
+    email_addresses = ["platform-team@example.com"]
+    custom = {
+      denied-burst = {
+        metric              = "access-denied"
+        comparison_operator = "GreaterThanThreshold"
+        threshold           = 100
+        period              = 60
+        description         = "More than 100 denied requests in a minute"
+      }
+      many-sessions = {
+        metric              = "load-balancer-active-flow-count"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 50
+        statistic           = "Maximum"
+        evaluation_periods  = 3
+      }
+    }
+  }
+```
+
+A custom alarm defaults to the `Sum` statistic, a 300 second period, 1 evaluation period and missing data treated as missing; its name must not clash with a module alarm. A metric that does not exist in the deployment (for example an endpoint metric without `topology = "hub"`) fails the plan with the list of available keys.
 
 ### Dashboard
 
-Module option `dashboard`. `dashboard = {}` creates the CloudWatch dashboard `verified-access-<name>` (output `dashboard_name`; requires `access_logs.cloudwatch` with metric filters): access decisions (`AccessAllowed`, `AccessDenied`), HTTP errors (`Http504`, `Http5xx`), healthy targets per endpoint on the central NLB (`topology = "hub"`) and a Logs Insights table of who is connecting. `dashboard.period` sets the metric period (default 300 seconds; 60, 300, 900, 3600, 21600 or 86400).
+Module option `dashboard`. `dashboard = {}` creates the CloudWatch dashboard `<name_prefix>-<name>` (output `dashboard_name`; requires `access_logs.cloudwatch` with all four metric filters, the default): access decisions (`AccessAllowed`, `AccessDenied`), HTTP errors (`Http504`, `Http5xx`), healthy targets per endpoint on the central NLB (`topology = "hub"`) and a Logs Insights table of who is connecting. `dashboard.period` sets the metric period (default 300 seconds; 60, 300, 900, 3600, 21600 or 86400).
 
 ### Metric stream, Dash0 or any external observability platform
 
 | Signal | Route |
 | --- | --- |
-| Log derived and NLB metrics | **Module option `metric_stream`**: a CloudWatch metric stream (`verified-access-<name>`, OpenTelemetry 1.0 by default; `json` and `opentelemetry0.7` also accepted) of `VerifiedAccess/<name>` and, with `topology = "hub"`, `AWS/NetworkELB`, to a Firehose delivery stream you provide (`firehose_arn`, with the `role_arn` CloudWatch assumes to write to it), for example one delivering to Dash0. Requires `access_logs.cloudwatch` with metric filters |
-| Raw access logs | `access_logs.firehose_delivery_stream_name` straight to a Firehose stream, or a CloudWatch Logs subscription filter (outside the module), to Dash0 (or Dash0's own AWS integration if already in place) |
+| Log derived and NLB metrics | **Module option `metric_stream`**: a CloudWatch metric stream (`<name_prefix>-<name>`, OpenTelemetry 1.0 by default; `json` and `opentelemetry0.7` also accepted) to a Firehose delivery stream you provide (`firehose_arn`, with the `role_arn` CloudWatch assumes to write to it, or `create_role = true`), for example one delivering to Dash0. By default it streams `VerifiedAccess/<name>` and, with `topology = "hub"`, `AWS/NetworkELB`; `metric_stream.include` streams only the chosen keys of the `metrics` output |
+| Raw access logs | `access_logs.firehose` to a Firehose stream (`delivery_stream_name` of yours, or `create = true` for one writing to S3), or a CloudWatch Logs subscription filter (outside the module), to Dash0 (or Dash0's own AWS integration if already in place) |
 | Stays in AWS only | The S3 archive (retention, immutability), the security alarm A7 (owned by security), Logs Insights queries |
 
-The Firehose delivery stream and its destination are platform specific, so they stay outside the module. Metric stream include filters match whole namespaces: `AWS/NetworkELB` carries every network load balancer in the account and region, not just the central one.
+Stream only some metrics to Dash0:
+
+```hcl
+  metric_stream = {
+    firehose_arn = "arn:aws:firehose:eu-west-2:111111111111:deliverystream/dash0"
+    create_role  = true
+    include      = ["access-allowed", "access-denied", "tenant-a-ssh/healthy-host-count"]
+  }
+```
+
+The stream groups the keys by namespace and filters by metric name. A metric stream cannot filter by dimension, so an `AWS/NetworkELB` or `AWS/Logs` metric is streamed for every load balancer or log group in the account and region, not just this deployment's (`tenant-a-ssh/healthy-host-count` streams `HealthyHostCount` of every target group). The Firehose delivery stream and its destination are platform specific, so they stay outside the module.
 
 ### Timings worth knowing
 
@@ -137,6 +213,10 @@ With `dns` (a Route 53 public hosted zone), the module publishes them, and with 
 
 1. Deployment repository: run the destroy workflow. If the pipeline role is not allowed to delete ACM certificates, first set `certificate = null` and add a `removed` block for `module.<name>.aws_acm_certificate.current` (`lifecycle { destroy = false }`), so the certificate leaves state without being deleted (the endpoints using it need their own `domain_certificate_arn`, or are destroyed in the same change); an unused public certificate is free and expires. With `load_balancer.enable_deletion_protection = true`, turn it off and apply before destroying.
 2. Remove the tenant side: security group rules for the endpoint subnets and the application DNS records.
+3. Resources the module created on request need care before destroying:
+   - **Access log bucket** (`access_logs.s3.create`): the destroy fails while the bucket holds log objects, unless `force_destroy = true` (set it and apply first). With `object_lock`, locked object versions cannot be deleted by anyone until their retention ends (in `COMPLIANCE` mode not even by the root user), so the bucket cannot be destroyed until then; remove it from state with a `removed` block (`lifecycle { destroy = false }`) and let the lifecycle rule empty it. Object Lock cannot be turned off, and turning `object_lock` on or off later replaces the bucket.
+   - **KMS keys** (`create_kms_key`, `access_logs.cloudwatch.create_kms_key`, `alarms.create_kms_key`): a destroy schedules key deletion after a 30 day window, during which `aws kms cancel-key-deletion` restores it. Once deleted, anything still encrypted with it is unreadable: Verified Access configuration encrypted with the key, and log events in the log group.
+   - **Existing instance** (`existing_instance`): the destroy removes only the groups, endpoints and central NLB; the instance and its trust providers stay with their owner.
 
 ## Troubleshooting
 
@@ -152,5 +232,5 @@ With `dns` (a Route 53 public hosted zone), the module publishes them, and with 
 | Pipeline: `AssumeRoleWithWebIdentity` denied | The role trusts a different OIDC subject; new repositories use the immutable form `org@<id>/repo@<id>` | The repository's `actions/oidc/customization/sub`; the role's `repository` value |
 | Pipeline: `jq: parse error` before Terraform | Transient GitHub token error | Re-run the failed jobs |
 | Pipeline: `Saved plan is stale` | Re-ran only the apply after an earlier failure | Start a fresh run (`workflow_dispatch` on `main`) |
-| Alarms "logging stopped" (A5) and "no successful access" (A6) firing | No traffic in a quiet environment | Expected; tune `alarms.thresholds` |
+| Alarms "logging stopped" (A5) and "no successful access" (A6) firing | No traffic in a quiet environment | Expected; turn them off or lengthen them in `alarms.rules` ([customising the alarms](#customising-the-alarms)) |
 | No alarm emails arrive | The SNS subscription was not confirmed | Each recipient confirms the email from AWS |

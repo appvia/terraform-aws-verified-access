@@ -15,6 +15,6 @@ output "id" {
 }
 
 output "security_group_id" {
-  description = "The id of the security group attached to the endpoint network interfaces"
-  value       = aws_security_group.current.id
+  description = "The id of the security group the module created for the endpoint network interfaces, null with create_security_group false"
+  value       = var.create_security_group ? aws_security_group.current[0].id : null
 }

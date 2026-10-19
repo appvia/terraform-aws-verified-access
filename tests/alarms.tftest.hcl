@@ -131,11 +131,11 @@ run "configured_alarms" {
       kms_key_arn        = "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
       email_addresses    = ["platform@example.com", "security@example.com"]
       pipeline_role_name = "verified-access-pipeline"
-      thresholds = {
-        http_504                = 10
-        access_denied           = 50
-        logging_stopped_hours   = 6
-        no_access_allowed_hours = 72
+      rules = {
+        http-504          = { threshold = 10 }
+        access-denied     = { threshold = 50 }
+        logging-stopped   = { evaluation_periods = 6 }
+        no-access-allowed = { evaluation_periods = 72 }
       }
     }
   }
@@ -157,7 +157,7 @@ run "configured_alarms" {
       aws_cloudwatch_metric_alarm.current["logging-stopped"].evaluation_periods == 6,
       aws_cloudwatch_metric_alarm.current["no-access-allowed"].evaluation_periods == 72,
     ])
-    error_message = "The thresholds should be configurable"
+    error_message = "The thresholds and alarm windows should be configurable per alarm"
   }
 
   assert {
@@ -221,7 +221,8 @@ run "existing_topic" {
 
   variables {
     alarms = {
-      sns_topic_arn = "arn:aws:sns:eu-west-2:111111111111:existing"
+      create_sns_topic = false
+      sns_topic_arn    = "arn:aws:sns:eu-west-2:111111111111:existing"
     }
   }
 
@@ -320,14 +321,14 @@ run "customised_alarms" {
   variables {
     topology = "hub"
     alarms = {
-      disabled               = ["access-denied", "unhealthy-targets"]
       additional_action_arns = ["arn:aws:sns:eu-west-2:111111111111:pagerduty"]
-      thresholds = {
-        http_504 = 10
-      }
-      overrides = {
-        http-504           = { threshold = 25, period = 60, evaluation_periods = 3 }
-        no-healthy-targets = { evaluation_periods = 5 }
+      pipeline_role_name     = "verified-access-pipeline"
+      rules = {
+        access-denied            = { enabled = false }
+        unhealthy-targets        = { enabled = false }
+        http-504                 = { threshold = 25, period = 60, evaluation_periods = 3, treat_missing_data = "missing" }
+        no-healthy-targets       = { evaluation_periods = 5 }
+        changed-outside-pipeline = { enabled = false }
       }
     }
     groups = {
@@ -350,7 +351,7 @@ run "customised_alarms" {
 
   assert {
     condition     = toset(keys(aws_cloudwatch_metric_alarm.current)) == toset(["http-504", "logging-stopped", "no-access-allowed", "app-ssh-no-healthy-targets"])
-    error_message = "Disabled alarms should not be created"
+    error_message = "Alarms turned off in rules should not be created"
   }
 
   assert {
@@ -358,11 +359,18 @@ run "customised_alarms" {
       aws_cloudwatch_metric_alarm.current["http-504"].threshold == 25,
       aws_cloudwatch_metric_alarm.current["http-504"].period == 60,
       aws_cloudwatch_metric_alarm.current["http-504"].evaluation_periods == 3,
+      aws_cloudwatch_metric_alarm.current["http-504"].treat_missing_data == "missing",
       aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].evaluation_periods == 5,
       aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].period == 60,
+      aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].threshold == 1,
       aws_cloudwatch_metric_alarm.current["logging-stopped"].period == 3600,
     ])
-    error_message = "Overrides should win over the thresholds and defaults, leaving the rest unchanged"
+    error_message = "Rules should win over the defaults, leaving the unset settings unchanged"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_event_rule.changed_outside_pipeline) == 0 && length(aws_cloudwatch_event_target.changed_outside_pipeline) == 0
+    error_message = "The changed outside the pipeline rule should be turned off by its rule, even with pipeline_role_name"
   }
 
   assert {
@@ -370,5 +378,135 @@ run "customised_alarms" {
       for alarm in aws_cloudwatch_metric_alarm.current : toset(alarm.alarm_actions) == toset([aws_sns_topic.alarms[0].arn, "arn:aws:sns:eu-west-2:111111111111:pagerduty"]) && toset(alarm.ok_actions) == toset(alarm.alarm_actions)
     ])
     error_message = "Every alarm should notify the topic and the additional actions, on alarm and on recovery"
+  }
+}
+
+run "endpoint_rules" {
+  command = apply
+
+  variables {
+    topology = "hub"
+    alarms = {
+      rules = {
+        no-healthy-targets           = { evaluation_periods = 5 }
+        "app-ssh/no-healthy-targets" = { threshold = 2 }
+        "app-web/no-healthy-targets" = { enabled = false }
+        unhealthy-targets            = { enabled = false }
+        "app-web/unhealthy-targets"  = { enabled = true, threshold = 1 }
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+          app-web = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 8080, to_port = 8080 }]
+            targets     = ["10.50.0.20"]
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = toset([for key in keys(aws_cloudwatch_metric_alarm.current) : key if strcontains(key, "targets")]) == toset(["app-ssh-no-healthy-targets", "app-web-unhealthy-targets"])
+    error_message = "An <endpoint>/<alarm> rule should turn one endpoint's alarm off, or back on, over the rule for every endpoint"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].threshold == 2,
+      aws_cloudwatch_metric_alarm.current["app-ssh-no-healthy-targets"].evaluation_periods == 5,
+      aws_cloudwatch_metric_alarm.current["app-web-unhealthy-targets"].threshold == 1,
+      aws_cloudwatch_metric_alarm.current["app-web-unhealthy-targets"].evaluation_periods == 5,
+    ])
+    error_message = "An endpoint rule should win over the rule for every endpoint, which wins over the defaults"
+  }
+}
+
+run "custom_alarms" {
+  command = apply
+
+  variables {
+    topology = "hub"
+    alarms = {
+      custom = {
+        denied-burst = {
+          metric              = "access-denied"
+          comparison_operator = "GreaterThanThreshold"
+          threshold           = 100
+          period              = 60
+        }
+        app-ssh-connections = {
+          metric              = "app-ssh/unhealthy-host-count"
+          comparison_operator = "GreaterThanOrEqualToThreshold"
+          threshold           = 1
+          statistic           = "Maximum"
+          evaluation_periods  = 3
+          description         = "An SSH host is unhealthy"
+        }
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            targets     = ["10.50.0.10"]
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].alarm_name == "verified-access-test-denied-burst",
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].namespace == "VerifiedAccess/test",
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].metric_name == "AccessDenied",
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].statistic == "Sum",
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].period == 60,
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].treat_missing_data == "missing",
+      length(aws_cloudwatch_metric_alarm.custom["denied-burst"].dimensions) == 0,
+    ])
+    error_message = "A custom alarm on a log derived metric should watch the metric in the module namespace"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].namespace == "AWS/NetworkELB",
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].metric_name == "UnHealthyHostCount",
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].dimensions["TargetGroup"] == aws_lb_target_group.current["app-ssh"].arn_suffix,
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].dimensions["LoadBalancer"] == aws_lb.current[0].arn_suffix,
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].alarm_description == "An SSH host is unhealthy",
+      aws_cloudwatch_metric_alarm.custom["app-ssh-connections"].evaluation_periods == 3,
+    ])
+    error_message = "A custom alarm on an endpoint metric should watch the endpoint's target group"
+  }
+
+  assert {
+    condition     = alltrue([for alarm in aws_cloudwatch_metric_alarm.custom : contains(alarm.alarm_actions, aws_sns_topic.alarms[0].arn) && contains(alarm.ok_actions, aws_sns_topic.alarms[0].arn)])
+    error_message = "Custom alarms should notify the topic, on alarm and on recovery"
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.current) == 6
+    error_message = "Custom alarms should be added to the module alarms"
   }
 }

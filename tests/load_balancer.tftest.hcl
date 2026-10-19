@@ -551,3 +551,44 @@ run "hub_security_group_rule_quota" {
   ## Two listeners from two subnet ranges are four inbound rules
   expect_failures = [aws_security_group.load_balancer]
 }
+
+run "hub_supplied_security_groups" {
+  command = apply
+
+  variables {
+    load_balancer = {
+      create_security_group = false
+      security_group_ids    = ["sg-0123456789abcdef0"]
+    }
+  }
+
+  assert {
+    condition     = length(aws_security_group.load_balancer) == 0
+    error_message = "No load balancer security group should be created"
+  }
+
+  assert {
+    condition     = tolist(aws_lb.current[0].security_groups) == tolist(["sg-0123456789abcdef0"])
+    error_message = "The load balancer should use only the supplied security groups"
+  }
+
+  assert {
+    condition     = output.load_balancer_security_group_id == null
+    error_message = "No load balancer security group should be exported"
+  }
+}
+
+run "hub_additional_security_groups" {
+  command = apply
+
+  variables {
+    load_balancer = {
+      security_group_ids = ["sg-0123456789abcdef0"]
+    }
+  }
+
+  assert {
+    condition     = length(aws_lb.current[0].security_groups) == 2 && contains(aws_lb.current[0].security_groups, aws_security_group.load_balancer[0].id) && contains(aws_lb.current[0].security_groups, "sg-0123456789abcdef0")
+    error_message = "The supplied security groups should be attached in addition to the created one"
+  }
+}

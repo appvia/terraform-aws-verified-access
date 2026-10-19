@@ -5,40 +5,89 @@ variable "access_logs" {
     log_version = optional(string, "ocsf-1.0.0-rc.2")
     ## Include identity and device trust context in the logs; this is personal data, so it is opt-in
     include_trust_context = optional(bool, false)
-    ## CloudWatch Logs destination; by default the module creates the log group so retention is always bounded
+    ## CloudWatch Logs destination: a log group the module creates (the default, so retention is always bounded), or an
+    ## existing one (create = false and log_group_name)
     cloudwatch = optional(object({
-      # The log group name, defaults to /aws/verified-access/<name>; required when create_log_group is false
-      log_group_name = optional(string, null)
       # Create the log group; false delivers to an existing log group (log_group_name), whose retention and
       # encryption are then owned elsewhere, and retention_in_days and kms_key_arn are ignored
-      create_log_group = optional(bool, true)
+      create = optional(bool, true)
+      # The name of the existing log group; with create, the name of the log group to create, defaulting to
+      # /aws/<name_prefix>/<name>
+      log_group_name = optional(string, null)
       # The number of days to retain the logs
       retention_in_days = optional(number, 90)
-      # An optional customer managed KMS key used to encrypt the log group
+      # An optional customer managed KMS key used to encrypt the log group; its key policy must permit
+      # logs.<region>.amazonaws.com
       kms_key_arn = optional(string, null)
-      # Create log derived metric filters and saved Logs Insights queries
-      enable_metric_filters = optional(bool, true)
+      # Instead of kms_key_arn: create a customer managed KMS key (alias/<name_prefix>-<name>-access-logs, rotation
+      # on) encrypting the created log group, usable only by CloudWatch Logs for that log group
+      create_kms_key = optional(bool, false)
+      # The log derived metrics to create, by key of the metrics output: access-allowed, access-denied, http-504 and
+      # http-5xx; null creates them all, [] none. Alarms, the dashboard and the metric stream need the ones they use
+      metric_filters = optional(list(string), null)
+      # Create the saved Logs Insights queries who-is-connecting and denied-requests
+      create_queries = optional(bool, true)
     }), null)
-    ## S3 destination; the bucket is owned elsewhere (e.g. log archive) and carries its own retention and object lock
+    ## S3 destination: an existing bucket (bucket_name, e.g. in the log archive account, carrying its own retention and
+    ## object lock), or one the module creates in this account (create = true)
     s3 = optional(object({
-      # The name of the bucket
-      bucket_name = string
-      # The account id that owns the bucket, required when the bucket is in another account
+      # Create the bucket, with versioning, encryption, a public access block, bucket owner enforced ownership, a
+      # TLS only policy permitting Verified Access log delivery, a lifecycle expiry and optional object lock
+      create = optional(bool, false)
+      # The name of the existing bucket; with create, the name of the bucket to create, defaulting to
+      # <name_prefix>-<name>-access-logs-<account id>
+      bucket_name = optional(string, null)
+      # The account id that owns an existing bucket, required when the bucket is in another account
       bucket_owner = optional(string, null)
       # An optional prefix for the log objects
       prefix = optional(string, null)
+      # Created bucket only: the days after which log objects expire (and their old versions a day later)
+      retention_days = optional(number, 365)
+      # Created bucket only: S3 Object Lock default retention, making each log object undeletable for days. Object
+      # Lock can only be enabled when the bucket is created and never turned off; in COMPLIANCE mode nobody, not even
+      # the root user, can delete a locked object or the bucket until the retention ends
+      object_lock = optional(object({
+        ## The retention mode, COMPLIANCE or GOVERNANCE (users with s3:BypassGovernanceRetention may delete)
+        mode = optional(string, "COMPLIANCE")
+        ## The days each object is locked for
+        days = number
+      }), null)
+      # Created bucket only: a customer managed KMS key (SSE-KMS) for the log objects, defaulting to SSE-S3; its key
+      # policy must permit delivery.logs.amazonaws.com
+      kms_key_arn = optional(string, null)
+      # Created bucket only: delete the bucket on destroy even when it holds log objects (locked objects still block it)
+      force_destroy = optional(bool, false)
     }), null)
-    ## Kinesis Data Firehose delivery stream name, e.g. for a third party SIEM
-    firehose_delivery_stream_name = optional(string, null)
+    ## Kinesis Data Firehose destination, e.g. for a third party SIEM: an existing delivery stream
+    ## (delivery_stream_name), or one the module creates in this account (create = true) writing to an S3 bucket
+    firehose = optional(object({
+      # Create the delivery stream, with the IAM role it writes to destination_bucket_arn with
+      create = optional(bool, false)
+      # The name of the existing delivery stream; with create, the name of the stream to create, defaulting to
+      # <name_prefix>-<name>-access-logs
+      delivery_stream_name = optional(string, null)
+      # Created stream only, and required with it: the ARN of the S3 bucket the delivery stream writes to; a bucket in
+      # another account must permit the delivery stream role (output access_log_firehose_role_arn) in its bucket policy
+      destination_bucket_arn = optional(string, null)
+      # Created stream only: an optional prefix for the delivered objects
+      prefix = optional(string, null)
+      # Created stream only: the seconds the delivery stream buffers before writing (0-900)
+      buffering_interval = optional(number, 300)
+      # Created stream only: the MiB the delivery stream buffers before writing (1-128)
+      buffering_size = optional(number, 5)
+      # Created stream only: an optional customer managed KMS key encrypting the delivered objects (SSE-KMS); the role
+      # may use it via S3
+      kms_key_arn = optional(string, null)
+    }), null)
   })
   default = null
 
   # V17: at least one destination is configured
   validation {
     condition = var.access_logs == null ? true : (
-      var.access_logs.cloudwatch != null || var.access_logs.s3 != null || var.access_logs.firehose_delivery_stream_name != null
+      var.access_logs.cloudwatch != null || var.access_logs.s3 != null || var.access_logs.firehose != null
     )
-    error_message = "When access_logs is set, at least one of cloudwatch, s3 or firehose_delivery_stream_name must be configured."
+    error_message = "When access_logs is set, at least one of cloudwatch, s3 or firehose must be configured."
   }
 
   # V18: the log version is supported by Verified Access
@@ -79,18 +128,97 @@ variable "access_logs" {
   # V60: an existing log group is named, as the module cannot derive it
   validation {
     condition = var.access_logs == null ? true : (
-      var.access_logs.cloudwatch == null ? true : var.access_logs.cloudwatch.create_log_group || var.access_logs.cloudwatch.log_group_name != null
+      var.access_logs.cloudwatch == null ? true : var.access_logs.cloudwatch.create || var.access_logs.cloudwatch.log_group_name != null
     )
-    error_message = "Set access_logs.cloudwatch.log_group_name when create_log_group is false, as the module delivers to that existing log group."
+    error_message = "Set access_logs.cloudwatch.log_group_name when create is false, as the module delivers to that existing log group."
+  }
+
+  # V75 (logging): the logging configuration of an existing instance is owned elsewhere (validated here, as
+  # existing_instance cannot read access_logs without a validation cycle through groups)
+  validation {
+    condition     = var.access_logs == null || var.existing_instance == null
+    error_message = "With existing_instance, leave access_logs unset (and with it alarms, dashboard and metric_stream): the instance's logging configuration is owned elsewhere."
+  }
+
+  # V65: the S3 bucket is either created or an existing one named, and a created bucket is in this account
+  validation {
+    condition = try(var.access_logs.s3, null) == null ? true : (
+      var.access_logs.s3.create ? var.access_logs.s3.bucket_owner == null : var.access_logs.s3.bucket_name != null
+    )
+    error_message = "Set access_logs.s3.bucket_name for an existing bucket, or create = true for one the module creates (without bucket_owner, as it is created in this account)."
+  }
+
+  # V66: the created bucket's settings are valid, and only set when the module creates the bucket
+  validation {
+    condition = try(var.access_logs.s3, null) == null ? true : (
+      var.access_logs.s3.create ? (
+        var.access_logs.s3.retention_days >= 1 &&
+        (var.access_logs.s3.object_lock == null ? true : (
+          contains(["COMPLIANCE", "GOVERNANCE"], var.access_logs.s3.object_lock.mode) &&
+          var.access_logs.s3.object_lock.days >= 1 && var.access_logs.s3.object_lock.days <= var.access_logs.s3.retention_days
+        )) &&
+        (var.access_logs.s3.kms_key_arn == null ? true : can(regex("^arn:aws[a-z-]*:kms:", var.access_logs.s3.kms_key_arn)))
+      ) : var.access_logs.s3.object_lock == null && var.access_logs.s3.kms_key_arn == null && !var.access_logs.s3.force_destroy
+    )
+    error_message = "With access_logs.s3.create, retention_days must be at least 1, object_lock a mode of COMPLIANCE or GOVERNANCE with days between 1 and retention_days, and kms_key_arn a KMS key ARN; object_lock, kms_key_arn and force_destroy only apply to a bucket the module creates."
+  }
+
+  # V67: the default name of the created bucket, <name_prefix>-<name>-access-logs-<account id>, fits in 63 characters
+  # and a supplied name is a valid bucket name
+  validation {
+    condition = !try(var.access_logs.s3.create, false) ? true : (
+      var.access_logs.s3.bucket_name == null
+      ? length(var.name_prefix) + length(var.name) <= 37
+      : can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.access_logs.s3.bucket_name))
+    )
+    error_message = "The created access log bucket is named <name_prefix>-<name>-access-logs-<account id> (max 63), so name_prefix plus name must be at most 37 characters; set access_logs.s3.bucket_name (a valid bucket name) otherwise."
+  }
+
+  # V68: the delivery stream is either created or an existing one named, like the S3 bucket (V65); a created stream
+  # has a destination and buffering Firehose accepts, and its settings only apply to a stream the module creates
+  validation {
+    condition = try(var.access_logs.firehose, null) == null ? true : (
+      (var.access_logs.firehose.delivery_stream_name == null ? true : can(regex("^[a-zA-Z0-9_.-]{1,64}$", var.access_logs.firehose.delivery_stream_name))) &&
+      (var.access_logs.firehose.create ? (
+        can(regex("^arn:aws[a-z-]*:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.access_logs.firehose.destination_bucket_arn)) &&
+        var.access_logs.firehose.buffering_interval >= 0 && var.access_logs.firehose.buffering_interval <= 900 &&
+        var.access_logs.firehose.buffering_size >= 1 && var.access_logs.firehose.buffering_size <= 128 &&
+        (var.access_logs.firehose.kms_key_arn == null ? true : can(regex("^arn:aws[a-z-]*:kms:", var.access_logs.firehose.kms_key_arn)))
+        ) : (
+        var.access_logs.firehose.delivery_stream_name != null &&
+        var.access_logs.firehose.destination_bucket_arn == null && var.access_logs.firehose.prefix == null && var.access_logs.firehose.kms_key_arn == null
+      ))
+    )
+    error_message = "Set access_logs.firehose.delivery_stream_name for an existing delivery stream, or create = true with destination_bucket_arn (an S3 bucket ARN), buffering_interval 0-900, buffering_size 1-128 and kms_key_arn a KMS key ARN; destination_bucket_arn, prefix and kms_key_arn only apply to a stream the module creates, and delivery_stream_name is 1-64 letters, digits, underscores, dots and hyphens."
+  }
+
+  # V69: the log group key is either created or supplied, and only for a log group the module creates
+  validation {
+    condition = try(var.access_logs.cloudwatch, null) == null ? true : (
+      !(var.access_logs.cloudwatch.create_kms_key && var.access_logs.cloudwatch.kms_key_arn != null) &&
+      (var.access_logs.cloudwatch.create || !var.access_logs.cloudwatch.create_kms_key)
+    )
+    error_message = "Set at most one of access_logs.cloudwatch.create_kms_key and kms_key_arn, and create_kms_key only with create, as the key encrypts the log group the module creates."
+  }
+
+  # V80: the metric filters are log derived metrics the module defines
+  validation {
+    condition = try(var.access_logs.cloudwatch.metric_filters, null) == null ? true : alltrue([
+      for key in var.access_logs.cloudwatch.metric_filters : contains(["access-allowed", "access-denied", "http-504", "http-5xx"], key)
+    ])
+    error_message = "The access_logs.cloudwatch.metric_filters entries must be access-allowed, access-denied, http-504 or http-5xx (null creates them all, [] none)."
   }
 }
 
 variable "alarms" {
-  description = "Alarms on the log derived metrics, the central load balancer and changes made outside the pipeline; null disables alarms. Requires CloudWatch access logs with metric filters"
+  description = "Alarms on the log derived metrics, the central load balancer and changes made outside the pipeline; null disables alarms. Each alarm can be turned off or tuned in rules, and custom alarms added on any metric the module makes available (output metrics). The log derived alarms need CloudWatch access logs with their metric filters"
   type = object({
-    ## An existing SNS topic to notify, defaults to a topic created by the module (verified-access-<name>-alarms)
+    ## Create the topic the alarms notify (<name_prefix>-<name>-alarms); false notifies the existing topic in
+    ## sns_topic_arn instead
+    create_sns_topic = optional(bool, true)
+    ## The existing SNS topic to notify, with create_sns_topic = false
     sns_topic_arn = optional(string, null)
-    ## Encrypt the created topic with a customer managed KMS key the module creates (verified-access-<name>-alarms)
+    ## Encrypt the created topic with a customer managed KMS key the module creates (<name_prefix>-<name>-alarms)
     create_kms_key = optional(bool, false)
     ## Encrypt the created topic with an existing customer managed KMS key; its key policy must permit CloudWatch and
     ## EventBridge. Leave both unset for an unencrypted topic
@@ -98,51 +226,93 @@ variable "alarms" {
     ## The email addresses subscribed to the topic; each recipient must confirm the subscription
     email_addresses = optional(list(string), [])
     ## The role the deployment pipeline assumes; when set, any other principal changing Verified Access raises an alarm
+    ## (the changed-outside-pipeline rule)
     pipeline_role_name = optional(string, null)
-    ## The alarm thresholds; starting values, to be tuned from real usage
-    thresholds = optional(object({
-      # The number of HTTP 504 responses in five minutes
-      http_504 = optional(number, 5)
-      # The number of denied requests in five minutes
-      access_denied = optional(number, 20)
-      # The number of hours without access log events before alarming
-      logging_stopped_hours = optional(number, 1)
-      # The number of hours without an allowed request before alarming
-      no_access_allowed_hours = optional(number, 24)
-    }), {})
-    ## The alarms not to create, by key: http-504, access-denied, logging-stopped, no-access-allowed,
-    ## no-healthy-targets and unhealthy-targets (the last two are per endpoint with targets)
-    disabled = optional(list(string), [])
     ## Additional ARNs notified on alarm and on recovery, e.g. an SNS topic subscribed by PagerDuty or AWS Chatbot
     additional_action_arns = optional(list(string), [])
-    ## Per alarm overrides of the period (seconds), evaluation periods and threshold, keyed like disabled; overrides
-    ## win over thresholds
-    overrides = optional(map(object({
-      # The period in seconds: 10, 30 or a multiple of 60
-      period = optional(number, null)
-      # The number of periods evaluated
-      evaluation_periods = optional(number, null)
+    ## Per alarm settings, keyed by alarm: http-504, access-denied, logging-stopped, no-access-allowed,
+    ## no-healthy-targets and unhealthy-targets (the last two apply to every endpoint with targets; key one endpoint as
+    ## <endpoint>/no-healthy-targets to override it alone), and changed-outside-pipeline (enabled only). An alarm
+    ## without a rule, or a setting left unset, keeps the module default (docs/operations.md, Alarms)
+    rules = optional(map(object({
+      # Create the alarm; false turns it off. Unset means on, or for an <endpoint>/<alarm> key the setting of <alarm>
+      enabled = optional(bool, null)
       # The threshold compared with the statistic
       threshold = optional(number, null)
+      # The period in seconds: 10, 30 or a multiple of 60
+      period = optional(number, null)
+      # The number of periods evaluated (period x evaluation_periods at most seven days)
+      evaluation_periods = optional(number, null)
+      # How missing data is treated: missing, ignore, breaching or notBreaching
+      treat_missing_data = optional(string, null)
+    })), {})
+    ## Additional alarms keyed by name (lowercase kebab-case, alarm <name_prefix>-<name>-<key>), on any metric the module
+    ## makes available, notifying the same actions
+    custom = optional(map(object({
+      # The metric, by key of the metrics output, e.g. access-denied or <endpoint>/unhealthy-host-count
+      metric = string
+      # The comparison: GreaterThanOrEqualToThreshold, GreaterThanThreshold, LessThanThreshold or
+      # LessThanOrEqualToThreshold
+      comparison_operator = string
+      # The threshold compared with the statistic
+      threshold = number
+      # The statistic: Sum, Average, Minimum, Maximum or SampleCount; the metrics output recommends one per metric
+      statistic = optional(string, "Sum")
+      # The period in seconds: 10, 30 or a multiple of 60
+      period = optional(number, 300)
+      # The number of periods evaluated (period x evaluation_periods at most seven days)
+      evaluation_periods = optional(number, 1)
+      # How missing data is treated: missing, ignore, breaching or notBreaching
+      treat_missing_data = optional(string, "missing")
+      # The alarm description, shown in the notification
+      description = optional(string, null)
     })), {})
   })
   default = null
 
-  # V35: the log derived alarms need the log derived metrics
+  # V35: the alarms on log derived metrics need CloudWatch access logs with the metric filters they watch: http-504,
+  # access-denied and no-access-allowed (access-allowed) and custom alarms on those metrics their filter, and
+  # logging-stopped and custom alarms on incoming-log-events or incoming-bytes the log group
   validation {
-    condition     = var.alarms == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
-    error_message = "Alarms require access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+    condition = var.alarms == null ? true : alltrue([
+      for metric in concat(
+        [
+          for alarm, metric in { "http-504" = "http-504", "access-denied" = "access-denied", "no-access-allowed" = "access-allowed", "logging-stopped" = "incoming-log-events" } :
+          metric if try(var.alarms.rules[alarm].enabled, null) != false
+        ],
+        [for alarm in values(var.alarms.custom) : alarm.metric],
+        ) : (
+        contains(["incoming-log-events", "incoming-bytes"], metric) ? try(var.access_logs.cloudwatch, null) != null : (
+          !contains(["access-allowed", "access-denied", "http-504", "http-5xx"], metric) ? true : try(
+            var.access_logs.cloudwatch.metric_filters == null ? true : contains(var.access_logs.cloudwatch.metric_filters, metric), false
+          )
+        )
+      )
+    ])
+    error_message = "Alarms on the log derived metrics need access_logs.cloudwatch with those metric filters (Verified Access publishes no metrics of its own): http-504 needs metric filter http-504, access-denied needs access-denied, no-access-allowed needs access-allowed and a custom alarm needs the filter of its metric; logging-stopped needs access_logs.cloudwatch. Add the filter to access_logs.cloudwatch.metric_filters, or turn the alarm off in alarms.rules."
   }
 
-  # V36: the thresholds are positive and the alarm windows are within the seven days CloudWatch evaluates
+  # V36: the rule settings are ones CloudWatch accepts, with each alarm window (its period, or the default, times its
+  # evaluation periods) within the seven days CloudWatch evaluates
   validation {
-    condition = var.alarms == null ? true : (
-      var.alarms.thresholds.http_504 >= 1 &&
-      var.alarms.thresholds.access_denied >= 1 &&
-      var.alarms.thresholds.logging_stopped_hours >= 1 && var.alarms.thresholds.logging_stopped_hours <= 168 &&
-      var.alarms.thresholds.no_access_allowed_hours >= 1 && var.alarms.thresholds.no_access_allowed_hours <= 168
-    )
-    error_message = "The alarms.thresholds must be at least 1, and the hour thresholds at most 168 (seven days)."
+    condition = var.alarms == null ? true : alltrue([
+      for key, rule in var.alarms.rules : key == "changed-outside-pipeline" || !contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets"], element(split("/", key), length(split("/", key)) - 1)) ? true : (
+        (rule.threshold == null ? true : rule.threshold >= 0) &&
+        (rule.period == null ? true : contains([10, 30], rule.period) || (rule.period >= 60 && rule.period % 60 == 0)) &&
+        (rule.evaluation_periods == null ? true : rule.evaluation_periods >= 1) &&
+        (rule.treat_missing_data == null ? true : contains(["missing", "ignore", "breaching", "notBreaching"], rule.treat_missing_data)) &&
+        coalesce(
+          rule.period,
+          try(var.alarms.rules[element(split("/", key), length(split("/", key)) - 1)].period, null),
+          { "http-504" = 300, "access-denied" = 300, "logging-stopped" = 3600, "no-access-allowed" = 3600, "no-healthy-targets" = 60, "unhealthy-targets" = 60 }[element(split("/", key), length(split("/", key)) - 1)],
+          ) * coalesce(
+          rule.evaluation_periods,
+          try(var.alarms.rules[element(split("/", key), length(split("/", key)) - 1)].evaluation_periods, null),
+          { "http-504" = 1, "access-denied" = 1, "logging-stopped" = 1, "no-access-allowed" = 24, "no-healthy-targets" = 2, "unhealthy-targets" = 5 }[element(split("/", key), length(split("/", key)) - 1)],
+        ) <= 604800
+      )
+    ])
+    error_message = "The alarms.rules need a threshold of at least 0, period 10, 30 or a multiple of 60, evaluation_periods at least 1 with period x evaluation_periods at most seven days (604800 seconds), and treat_missing_data missing, ignore, breaching or notBreaching."
   }
 
   # V37: the topic, key and recipients are well formed
@@ -159,38 +329,70 @@ variable "alarms" {
   validation {
     condition = var.alarms == null ? true : (
       !(var.alarms.create_kms_key && var.alarms.kms_key_arn != null) &&
-      (var.alarms.sns_topic_arn == null || (var.alarms.kms_key_arn == null && !var.alarms.create_kms_key))
+      (var.alarms.create_sns_topic || (var.alarms.kms_key_arn == null && !var.alarms.create_kms_key))
     )
-    error_message = "Set at most one of alarms.create_kms_key and alarms.kms_key_arn, and neither when alarms.sns_topic_arn is set, as the key only applies to the topic created by the module."
+    error_message = "Set at most one of alarms.create_kms_key and alarms.kms_key_arn, and neither with create_sns_topic = false, as the key only applies to the topic created by the module."
   }
 
-  # V61: the disabled alarms are ones the module creates
+  # V61: the rules are keyed by alarms the module creates, or by <endpoint>/<alarm> for the load balancer alarms
   validation {
     condition = var.alarms == null ? true : alltrue([
-      for key in var.alarms.disabled : contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets"], key)
+      for key in keys(var.alarms.rules) : contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets", "changed-outside-pipeline"], key) || can(regex("^[a-z0-9][a-z0-9-]*/(no-healthy-targets|unhealthy-targets)$", key))
     ])
-    error_message = "The alarms.disabled entries must be http-504, access-denied, logging-stopped, no-access-allowed, no-healthy-targets or unhealthy-targets."
+    error_message = "The alarms.rules keys must be http-504, access-denied, logging-stopped, no-access-allowed, no-healthy-targets, unhealthy-targets or changed-outside-pipeline, or <endpoint>/no-healthy-targets and <endpoint>/unhealthy-targets for one endpoint."
   }
 
-  # V62: the overrides are keyed by alarms the module creates, with periods CloudWatch accepts, within the seven days
-  # CloudWatch evaluates
+  # V62: a per endpoint rule names an endpoint with targets on the central load balancer (topology hub), which is
+  # what the load balancer alarms watch
   validation {
     condition = var.alarms == null ? true : alltrue([
-      for key, override in var.alarms.overrides : (
-        contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "no-healthy-targets", "unhealthy-targets"], key) &&
-        (override.period == null ? true : contains([10, 30], override.period) || (override.period >= 60 && override.period % 60 == 0)) &&
-        (override.evaluation_periods == null ? true : override.evaluation_periods >= 1) &&
-        (override.period == null || override.evaluation_periods == null ? true : override.period * override.evaluation_periods <= 604800) &&
-        (override.threshold == null ? true : override.threshold >= 0)
-      )
+      for key in keys(var.alarms.rules) : !strcontains(key, "/") ? true : var.topology == "hub" && contains(flatten([
+        for group in values(var.groups) : [
+          for name, endpoint in group.endpoints : name if endpoint.type == "load-balancer" && length(endpoint.targets) + length(endpoint.target_details) > 0
+        ]
+      ]), split("/", key)[0])
     ])
-    error_message = "The alarms.overrides must be keyed like alarms.disabled, with period 10, 30 or a multiple of 60, evaluation_periods at least 1 (period x evaluation_periods at most seven days) and a threshold of at least 0."
+    error_message = "An alarms.rules key <endpoint>/<alarm> must name a load-balancer endpoint with targets (topology hub), as only those have load balancer alarms."
   }
 
   # V63: the additional actions are ARNs
   validation {
     condition     = var.alarms == null ? true : alltrue([for arn in var.alarms.additional_action_arns : can(regex("^arn:aws[a-z-]*:[a-z0-9-]+:", arn))])
     error_message = "The alarms.additional_action_arns must be ARNs, e.g. arn:aws:sns:eu-west-2:111111111111:pagerduty."
+  }
+
+  # V77: the changed-outside-pipeline rule is an EventBridge rule, not a metric alarm, so it can only be turned off
+  validation {
+    condition = try(var.alarms.rules["changed-outside-pipeline"], null) == null ? true : (
+      var.alarms.rules["changed-outside-pipeline"].threshold == null &&
+      var.alarms.rules["changed-outside-pipeline"].period == null &&
+      var.alarms.rules["changed-outside-pipeline"].evaluation_periods == null &&
+      var.alarms.rules["changed-outside-pipeline"].treat_missing_data == null
+    )
+    error_message = "The alarms.rules changed-outside-pipeline entry only takes enabled: it is an EventBridge rule on CloudTrail events (created when pipeline_role_name is set), not a metric alarm."
+  }
+
+  # V78: the custom alarms are named apart from the module's alarms and are ones CloudWatch accepts
+  validation {
+    condition = var.alarms == null ? true : alltrue([
+      for key, alarm in var.alarms.custom : (
+        can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", key)) &&
+        !contains(["http-504", "access-denied", "logging-stopped", "no-access-allowed", "changed-outside-pipeline"], key) &&
+        !can(regex("-(no-healthy-targets|unhealthy-targets)$", key)) &&
+        contains(["GreaterThanOrEqualToThreshold", "GreaterThanThreshold", "LessThanThreshold", "LessThanOrEqualToThreshold"], alarm.comparison_operator) &&
+        contains(["Sum", "Average", "Minimum", "Maximum", "SampleCount"], alarm.statistic) &&
+        (contains([10, 30], alarm.period) || (alarm.period >= 60 && alarm.period % 60 == 0)) &&
+        alarm.evaluation_periods >= 1 && alarm.period * alarm.evaluation_periods <= 604800 &&
+        contains(["missing", "ignore", "breaching", "notBreaching"], alarm.treat_missing_data)
+      )
+    ])
+    error_message = "The alarms.custom keys must be lowercase kebab-case and not a module alarm name (http-504, access-denied, logging-stopped, no-access-allowed, changed-outside-pipeline, or ending in -no-healthy-targets or -unhealthy-targets); each needs a comparison_operator of GreaterThanOrEqualToThreshold, GreaterThanThreshold, LessThanThreshold or LessThanOrEqualToThreshold, a statistic of Sum, Average, Minimum, Maximum or SampleCount, period 10, 30 or a multiple of 60, evaluation_periods at least 1 (period x evaluation_periods at most seven days) and treat_missing_data missing, ignore, breaching or notBreaching."
+  }
+
+  # V82: the alarm topic is either created or an existing one supplied
+  validation {
+    condition     = var.alarms == null ? true : var.alarms.create_sns_topic == (var.alarms.sns_topic_arn == null)
+    error_message = "Set alarms.sns_topic_arn with create_sns_topic = false to notify an existing topic, or leave both at their defaults for a topic the module creates."
   }
 }
 
@@ -228,18 +430,27 @@ variable "cidr_endpoints_custom_subdomain" {
   default     = null
 }
 
+variable "create_kms_key" {
+  description = "Instead of kms_key_arn: create a customer managed KMS key (alias/<name_prefix>-<name>, rotation on) encrypting the Verified Access trust providers, groups and endpoints, usable by Verified Access in this account. Deleting it makes their configuration unreadable, so it is deleted after a 30 day window"
+  type        = bool
+  default     = false
+}
+
 variable "dashboard" {
-  description = "An optional CloudWatch dashboard (verified-access-<name>) showing access decisions, HTTP errors, load balancer health and who is connecting; null disables it. Requires CloudWatch access logs with metric filters"
+  description = "An optional CloudWatch dashboard (<name_prefix>-<name>) showing access decisions, HTTP errors, load balancer health and who is connecting; null disables it. Requires CloudWatch access logs with the metric filters access-allowed, access-denied, http-504 and http-5xx"
   type = object({
     ## The period in seconds of the metric widgets
     period = optional(number, 300)
   })
   default = null
 
-  # V39: the dashboard shows the log derived metrics and queries the access logs
+  # V39: the dashboard shows the log derived metrics (all four) and queries the access logs
   validation {
-    condition     = var.dashboard == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
-    error_message = "The dashboard requires access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+    condition = var.dashboard == null ? true : try(
+      var.access_logs.cloudwatch.metric_filters == null ? true : length(setsubtract(["access-allowed", "access-denied", "http-504", "http-5xx"], var.access_logs.cloudwatch.metric_filters)) == 0,
+      false
+    )
+    error_message = "The dashboard requires access_logs.cloudwatch with the metric filters access-allowed, access-denied, http-504 and http-5xx (the default, metric_filters = null), as Verified Access publishes no metrics of its own."
   }
 
   # V40: the period is one CloudWatch accepts for metric widgets
@@ -322,6 +533,73 @@ variable "device_trust_provider" {
       ])
     )
     error_message = "The device_trust_provider.jamf_allowed_risk must be a non-empty list of HIGH, MEDIUM, LOW, SECURE or NOT_APPLICABLE."
+  }
+}
+
+variable "existing_instance" {
+  description = "An existing Verified Access instance to add the groups and endpoints to, instead of creating one; null (the default) creates the instance. The instance, its trust providers, logging and web ACL are then owned elsewhere, so user_trust_provider, device_trust_provider, the OIDC client secrets, access_logs (and with it alarms, dashboard and metric_stream), waf, fips_enabled, description and cidr_endpoints_custom_subdomain must be left unset; the settings below describe the attached trust providers so the module can render the policies"
+  type = object({
+    ## The id of the instance, e.g. vai-0123456789abcdef0
+    id = string
+    ## The type of the user trust provider attached to the instance (iam-identity-center, oidc), which decides how
+    ## identity groups are rendered
+    user_trust_provider_type = optional(string, "iam-identity-center")
+    ## The Cedar context key (policy reference name) of the attached user trust provider, e.g. idc
+    user_policy_reference_name = string
+    ## OIDC only: the claim holding the user's groups, as in user_trust_provider.oidc.groups_claim
+    user_groups_claim = optional(string, "groups")
+    ## IAM Identity Center only: require a verified email address in every group policy, as in
+    ## user_trust_provider.require_verified_email
+    require_verified_email = optional(bool, false)
+    ## The device trust provider attached to the instance, needed for sensitive endpoints; null when none is attached
+    device_trust_provider = optional(object({
+      # The type of device trust provider (crowdstrike, jamf, jumpcloud)
+      type = string
+      # The Cedar context key (policy reference name) of the attached provider, defaults to the type
+      policy_reference_name = optional(string, null)
+      # CrowdStrike only: the minimum assessment.overall score (1-100) for sensitive endpoints
+      crowdstrike_min_score = optional(number, 50)
+      # Jamf only: the risk levels permitted for sensitive endpoints
+      jamf_allowed_risk = optional(list(string), ["LOW", "SECURE"])
+    }), null)
+  })
+  default = null
+
+  # V74: exactly one of a created instance (user_trust_provider) and an existing instance, named by its id
+  validation {
+    condition = (var.existing_instance == null) == (var.user_trust_provider != null) && (
+      var.existing_instance == null ? true : can(regex("^vai-[0-9a-f]+$", var.existing_instance.id))
+    )
+    error_message = "Set exactly one of user_trust_provider (the module creates the instance) and existing_instance (an existing instance, id like vai-0123456789abcdef0)."
+  }
+
+  # V75: the instance level settings belong to whoever owns the existing instance
+  validation {
+    condition = var.existing_instance == null ? true : (
+      var.device_trust_provider == null && var.oidc_client_secret == null && var.oidc_native_client_secret == null &&
+      var.waf == null && !var.fips_enabled && var.description == null &&
+      var.cidr_endpoints_custom_subdomain == null
+    )
+    error_message = "With existing_instance, leave device_trust_provider, oidc_client_secret, oidc_native_client_secret, waf, fips_enabled, description and cidr_endpoints_custom_subdomain unset: the instance, its trust providers, logging and web ACL are owned elsewhere. Describe an attached device provider in existing_instance.device_trust_provider."
+  }
+
+  # V76: the attached trust providers are described with values Verified Access and Cedar accept, as for the providers
+  # the module creates (V2, V3, V5-V7, V51)
+  validation {
+    condition = var.existing_instance == null ? true : (
+      contains(["iam-identity-center", "oidc"], var.existing_instance.user_trust_provider_type) &&
+      can(regex("^[a-z][a-z0-9_]{0,31}$", var.existing_instance.user_policy_reference_name)) &&
+      can(regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", var.existing_instance.user_groups_claim)) &&
+      (var.existing_instance.device_trust_provider == null ? true : (
+        contains(["crowdstrike", "jamf", "jumpcloud"], var.existing_instance.device_trust_provider.type) &&
+        (var.existing_instance.device_trust_provider.policy_reference_name == null ? true : can(regex("^[a-z][a-z0-9_]{0,31}$", var.existing_instance.device_trust_provider.policy_reference_name))) &&
+        var.existing_instance.device_trust_provider.crowdstrike_min_score >= 1 && var.existing_instance.device_trust_provider.crowdstrike_min_score <= 100 &&
+        length(var.existing_instance.device_trust_provider.jamf_allowed_risk) > 0 && alltrue([
+          for risk in var.existing_instance.device_trust_provider.jamf_allowed_risk : contains(["HIGH", "MEDIUM", "LOW", "SECURE", "NOT_APPLICABLE"], risk)
+        ])
+      ))
+    )
+    error_message = "The existing_instance needs user_trust_provider_type iam-identity-center or oidc, a user_policy_reference_name and optional device policy_reference_name of lowercase letters, digits and underscores (max 32), a user_groups_claim of letters, digits, underscores and dots, and a device_trust_provider type of crowdstrike, jamf or jumpcloud with crowdstrike_min_score 1-100 and jamf_allowed_risk from HIGH, MEDIUM, LOW, SECURE and NOT_APPLICABLE."
   }
 }
 
@@ -442,8 +720,11 @@ variable "groups" {
       endpoint_domain_prefix = optional(string, null)
       # Override the subnets for this endpoint, defaults to var.subnet_ids
       subnet_ids = optional(list(string), null)
-      # Additional security groups to attach to the endpoint
+      # Additional security groups to attach to the endpoint; with create_security_group false, the only ones
       security_group_ids = optional(list(string), [])
+      # Create the endpoint security group (<name_prefix>-<name>-<endpoint>, egress only to the targets); false uses
+      # only security_group_ids, whose rules must then allow the endpoint to reach its targets
+      create_security_group = optional(bool, true)
       # Override the CIDR blocks the endpoint security group may send to
       egress_cidr_blocks = optional(list(string), null)
       # A structured endpoint policy, evaluated in addition to the group policy (both must allow): identity groups
@@ -497,7 +778,7 @@ variable "groups" {
 
   # V11 (Identity Center): identity groups are group ids, not display names
   validation {
-    condition = var.user_trust_provider.type != "iam-identity-center" ? true : alltrue([
+    condition = try(coalesce(try(var.user_trust_provider.type, null), try(var.existing_instance.user_trust_provider_type, null)), null) != "iam-identity-center" ? true : alltrue([
       for group in values(var.groups) : group.policy == null ? true : alltrue([
         for id in group.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
       ])
@@ -602,7 +883,7 @@ variable "groups" {
 
   # V15: sensitive endpoints require a device trust provider (fail closed)
   validation {
-    condition = var.device_trust_provider != null ? true : !anytrue([
+    condition = var.device_trust_provider != null || try(var.existing_instance.device_trust_provider != null, false) ? true : !anytrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.sensitive
     ])
     error_message = "Endpoints marked sensitive require a device_trust_provider; configure one or remove the sensitive flag."
@@ -709,8 +990,8 @@ variable "groups" {
     condition = alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : (
         length(endpoint.policy.identity_groups) > 0 || endpoint.sensitive || anytrue([
-          for condition in endpoint.policy.additional_conditions : strcontains(condition, format("context.%s.", var.user_trust_provider.policy_reference_name)) || (
-            var.device_trust_provider == null ? false : strcontains(condition, format("context.%s.", coalesce(var.device_trust_provider.policy_reference_name, var.device_trust_provider.type)))
+          for condition in endpoint.policy.additional_conditions : strcontains(condition, format("context.%s.", try(coalesce(try(var.user_trust_provider.policy_reference_name, null), try(var.existing_instance.user_policy_reference_name, null)), ""))) || (
+            try(coalesce(try(var.device_trust_provider.policy_reference_name, null), try(var.device_trust_provider.type, null), try(var.existing_instance.device_trust_provider.policy_reference_name, null), try(var.existing_instance.device_trust_provider.type, null)), null) == null ? false : strcontains(condition, format("context.%s.", coalesce(try(var.device_trust_provider.policy_reference_name, null), try(var.device_trust_provider.type, null), try(var.existing_instance.device_trust_provider.policy_reference_name, null), try(var.existing_instance.device_trust_provider.type, null))))
           )
         ])
       )
@@ -720,7 +1001,7 @@ variable "groups" {
 
   # V48 (Identity Center): endpoint policy identity groups are group ids, not display names
   validation {
-    condition = var.user_trust_provider.type != "iam-identity-center" ? true : alltrue([
+    condition = try(coalesce(try(var.user_trust_provider.type, null), try(var.existing_instance.user_trust_provider_type, null)), null) != "iam-identity-center" ? true : alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : alltrue([
         for id in endpoint.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
       ])
@@ -826,16 +1107,40 @@ variable "groups" {
     ]) <= 50
     error_message = "At most 50 endpoints may have targets, as each is a listener on the central load balancer (50 listeners per network load balancer). Deploy a second instance of the module for more."
   }
+
+  # V71: an endpoint without the module security group has security groups of its own, and egress_cidr_blocks (a rule
+  # of the module security group) is not set
+  validation {
+    condition = alltrue([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) :
+      endpoint.create_security_group ? true : length(endpoint.security_group_ids) > 0 && endpoint.egress_cidr_blocks == null
+    ])
+    error_message = "An endpoint with create_security_group = false needs at least one security_group_ids entry, and cannot set egress_cidr_blocks, which only applies to the security group the module creates."
+  }
+
+  # V71: security group ids are well formed
+  validation {
+    condition = alltrue([
+      for id in flatten([for group in values(var.groups) : [for endpoint in values(group.endpoints) : endpoint.security_group_ids]]) : can(regex("^sg-[0-9a-f]+$", id))
+    ])
+    error_message = "Endpoint security_group_ids must be security group ids, e.g. sg-0123456789abcdef0."
+  }
 }
 
 variable "kms_key_arn" {
-  description = "An optional customer managed KMS key used to encrypt Verified Access trust providers, groups and endpoints"
+  description = "An optional customer managed KMS key used to encrypt Verified Access trust providers, groups and endpoints; its key policy must permit kms:CreateGrant, DescribeKey, GenerateDataKey and Decrypt via verified-access.<region>.amazonaws.com"
   type        = string
   default     = null
 
   validation {
     condition     = var.kms_key_arn == null ? true : can(regex("^arn:aws[a-z-]*:kms:", var.kms_key_arn))
     error_message = "The kms_key_arn must be a KMS key ARN."
+  }
+
+  # V70: the key is either created or supplied
+  validation {
+    condition     = !(var.create_kms_key && var.kms_key_arn != null)
+    error_message = "Set at most one of create_kms_key and kms_key_arn."
   }
 }
 
@@ -855,6 +1160,13 @@ variable "load_balancer" {
     ## The rules per security group quota of the account (default 60, inbound and outbound counted separately, one
     ## rule per address range); raise it here after raising the quota (Service Quotas, Amazon VPC)
     max_security_group_rules = optional(number, 60)
+    ## Create the load balancer security group (<name_prefix>-<name>-nlb, in from the module subnets on the listener
+    ## ports, out to each target); false uses only security_group_ids, whose rules must then allow the endpoint
+    ## subnets in on the listener ports and the targets out on their target and health check ports
+    create_security_group = optional(bool, true)
+    ## Security groups attached to the load balancer: in addition to the created one, or instead of it with
+    ## create_security_group false
+    security_group_ids = optional(list(string), [])
   })
   default = {}
 
@@ -878,34 +1190,63 @@ variable "load_balancer" {
     condition     = var.load_balancer.max_security_group_rules >= 1 && var.load_balancer.max_security_group_rules <= 1000
     error_message = "The load_balancer.max_security_group_rules must be between 1 and 1000."
   }
+
+  # V72: without the module security group the load balancer has security groups of its own (a network load balancer
+  # created with security groups must keep at least one), and the ids are well formed
+  validation {
+    condition = (
+      (var.load_balancer.create_security_group || length(var.load_balancer.security_group_ids) > 0) &&
+      alltrue([for id in var.load_balancer.security_group_ids : can(regex("^sg-[0-9a-f]+$", id))])
+    )
+    error_message = "With load_balancer.create_security_group = false, set at least one load_balancer.security_group_ids entry; each must be a security group id, e.g. sg-0123456789abcdef0."
+  }
 }
 
 variable "metric_stream" {
-  description = "An optional CloudWatch metric stream of the log derived metrics (and, with topology hub, the AWS/NetworkELB namespace) to a Kinesis Data Firehose delivery stream, e.g. for an external observability platform; null disables it"
+  description = "An optional CloudWatch metric stream to a Kinesis Data Firehose delivery stream, e.g. for an external observability platform: by default the log derived metrics and, with topology hub, the AWS/NetworkELB namespace, or only the metrics chosen in include; null disables it"
   type = object({
     ## The ARN of the Kinesis Data Firehose delivery stream receiving the metrics
     firehose_arn = string
-    ## The ARN of the IAM role CloudWatch assumes to write to the delivery stream
-    role_arn = string
+    ## The ARN of an existing IAM role CloudWatch assumes to write to the delivery stream
+    role_arn = optional(string, null)
+    ## Instead of role_arn: create the role (<name_prefix>-<name>-metric-stream), trusted by CloudWatch metric streams
+    ## in this account and permitted to write only to firehose_arn
+    create_role = optional(bool, false)
     ## The output format (json, opentelemetry0.7, opentelemetry1.0)
     output_format = optional(string, "opentelemetry1.0")
+    ## The metrics to stream, by key of the metrics output, e.g. ["access-denied", "<endpoint>/healthy-host-count"];
+    ## null streams every log derived metric and, with topology hub, the whole AWS/NetworkELB namespace. A stream
+    ## filters by namespace and metric name, not dimension, so an AWS/NetworkELB or AWS/Logs metric is streamed for
+    ## every load balancer or log group in the account and region
+    include = optional(list(string), null)
   })
   default = null
 
-  # V41: the stream carries the log derived metrics; an empty include filter would stream every metric
+  # V41: the stream carries metrics: by default the log derived metrics (at least one metric filter), or the chosen
+  # ones; an empty include filter would stream every metric in the account
   validation {
-    condition     = var.metric_stream == null ? true : try(var.access_logs.cloudwatch.enable_metric_filters, false)
-    error_message = "The metric stream requires access_logs.cloudwatch with enable_metric_filters, as Verified Access publishes no metrics of its own."
+    condition = var.metric_stream == null ? true : (
+      var.metric_stream.include != null ? length(var.metric_stream.include) > 0 : try(
+        var.access_logs.cloudwatch.metric_filters == null ? true : length(var.access_logs.cloudwatch.metric_filters) > 0, false
+      )
+    )
+    error_message = "The metric stream needs metrics to stream: access_logs.cloudwatch with at least one metric filter (Verified Access publishes no metrics of its own), or a non-empty metric_stream.include."
   }
 
   # V42: the delivery stream, role and output format are well formed
   validation {
     condition = var.metric_stream == null ? true : (
       can(regex("^arn:aws[a-z-]*:firehose:", var.metric_stream.firehose_arn)) &&
-      can(regex("^arn:aws[a-z-]*:iam::", var.metric_stream.role_arn)) &&
+      (var.metric_stream.role_arn == null ? true : can(regex("^arn:aws[a-z-]*:iam::", var.metric_stream.role_arn))) &&
       contains(["json", "opentelemetry0.7", "opentelemetry1.0"], var.metric_stream.output_format)
     )
     error_message = "The metric_stream needs a Firehose delivery stream ARN, an IAM role ARN and an output_format of json, opentelemetry0.7 or opentelemetry1.0."
+  }
+
+  # V73: the role is either created or supplied
+  validation {
+    condition     = var.metric_stream == null ? true : (var.metric_stream.role_arn != null) != var.metric_stream.create_role
+    error_message = "The metric_stream must set exactly one of role_arn or create_role = true."
   }
 }
 
@@ -940,7 +1281,7 @@ variable "oidc_client_secret" {
 
   # V4: an OIDC provider needs a client secret
   validation {
-    condition     = var.user_trust_provider.type != "oidc" ? true : var.oidc_client_secret != null
+    condition     = try(var.user_trust_provider.type, null) != "oidc" ? true : var.oidc_client_secret != null
     error_message = "The oidc_client_secret is required when user_trust_provider.type is oidc."
   }
 }
@@ -997,7 +1338,7 @@ variable "topology" {
 }
 
 variable "user_trust_provider" {
-  description = "The user identity trust provider, IAM Identity Center or an OIDC identity provider"
+  description = "The user identity trust provider the module creates, IAM Identity Center or an OIDC identity provider; required unless existing_instance is set, which describes the provider already attached instead"
   type = object({
     ## The type of user trust provider (iam-identity-center, oidc)
     type = string
@@ -1032,34 +1373,35 @@ variable "user_trust_provider" {
       native_scope = optional(string, null)
     }), null)
   })
+  default = null
 
   # V2: the user provider type is supported by Verified Access
   validation {
-    condition     = contains(["iam-identity-center", "oidc"], var.user_trust_provider.type)
+    condition     = var.user_trust_provider == null ? true : contains(["iam-identity-center", "oidc"], var.user_trust_provider.type)
     error_message = "The user_trust_provider.type must be iam-identity-center or oidc."
   }
 
   # V3: the policy reference name is a valid Cedar identifier
   validation {
-    condition     = can(regex("^[a-z][a-z0-9_]{0,31}$", var.user_trust_provider.policy_reference_name))
+    condition     = var.user_trust_provider == null ? true : can(regex("^[a-z][a-z0-9_]{0,31}$", var.user_trust_provider.policy_reference_name))
     error_message = "The user_trust_provider.policy_reference_name must start with a lowercase letter and contain only lowercase letters, digits and underscores (max 32)."
   }
 
   # V4: the OIDC settings are present exactly when the type is oidc
   validation {
-    condition     = (var.user_trust_provider.type == "oidc") == (var.user_trust_provider.oidc != null)
+    condition     = var.user_trust_provider == null ? true : (var.user_trust_provider.type == "oidc") == (var.user_trust_provider.oidc != null)
     error_message = "Set user_trust_provider.oidc when type is oidc, and only then."
   }
 
   # V51: the groups claim is a Cedar attribute path
   validation {
-    condition     = var.user_trust_provider.oidc == null ? true : can(regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", var.user_trust_provider.oidc.groups_claim))
+    condition     = try(var.user_trust_provider.oidc, null) == null ? true : can(regex("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$", var.user_trust_provider.oidc.groups_claim))
     error_message = "The user_trust_provider.oidc.groups_claim must be a claim name or dotted path of letters, digits and underscores, e.g. groups or additional_user_context.groups; use raw_policy for claims such as URLs."
   }
 
   # V52: a native application client needs the public signing key endpoint that enables native application access
   validation {
-    condition = var.user_trust_provider.oidc == null ? true : (
+    condition = try(var.user_trust_provider.oidc, null) == null ? true : (
       var.user_trust_provider.oidc.native_client_id == null && var.user_trust_provider.oidc.native_scope == null
     ) || var.user_trust_provider.oidc.public_signing_key_endpoint != null
     error_message = "The user_trust_provider.oidc.native_client_id and native_scope require public_signing_key_endpoint, which enables native application (Connectivity Client) access."

@@ -13,6 +13,7 @@ New to the module? Start with [getting started](getting-started.md).
 - [Alongside the existing ingress path](#alongside-the-existing-ingress-path) and [compared with a bastion](#compared-with-a-bastion)
 - [Traffic paths](#traffic-paths): [TCP](#tcp-ssh-rdp-databases-through-the-connectivity-client), [HTTPS](#http-and-https-in-the-browser-no-client), [denied](#denied-access)
 - [Endpoint types](#endpoint-types), [trust providers](#trust-providers), [quotas and grouping](#quotas-and-grouping)
+- [Create or bring your own](#create-or-bring-your-own): every supporting resource, created by the module or supplied
 - [Limitations](#limitations)
 
 ## The three layers
@@ -170,7 +171,7 @@ flowchart LR
   SGE -->|22 / 80| SGN -->|22 to 10.50.0.10<br/>80 to 10.50.0.20| SGT
 ```
 
-Every rule is scoped to one port and one destination: an endpoint can only reach the load balancer on its application's port, and the load balancer can only reach the registered targets. The module creates both security groups; the NLB security group allows the endpoint **subnet ranges** rather than the endpoint security groups, which would form a dependency cycle. For `load-balancer`, `network-interface` and `rds` endpoints whose target range cannot be derived, the endpoint security group may send to `allowed_egress_cidr_blocks` (default `10.0.0.0/8`), or per endpoint `egress_cidr_blocks`.
+Every rule is scoped to one port and one destination: an endpoint can only reach the load balancer on its application's port, and the load balancer can only reach the registered targets. The module creates both security groups by default (or uses yours, see [create or bring your own](#create-or-bring-your-own)); the NLB security group allows the endpoint **subnet ranges** rather than the endpoint security groups, which would form a dependency cycle. For `load-balancer`, `network-interface` and `rds` endpoints whose target range cannot be derived, the endpoint security group may send to `allowed_egress_cidr_blocks` (default `10.0.0.0/8`), or per endpoint `egress_cidr_blocks`.
 
 ### With an inspection VPC
 
@@ -312,6 +313,29 @@ Default quotas per account and region (all adjustable): 5 instances, 10 groups, 
 
 **Grouping strategy:** a group is a set of endpoints sharing one policy, so create groups per **audience** (for example platform engineers, tenant developers, support), not per tenant. Tenant specific rules go in endpoint policies (`endpoints.<name>.policy`, which narrows the group's audience to some of its identity groups or adds conditions; Verified Access requires both the group and the endpoint policy to allow). This keeps well within the 10 group limit as tenants grow.
 
+## Create or bring your own
+
+Every supporting resource follows one rule: the module creates it (`create = true`, or `create_<thing> = true` where one input holds several resources), **or** you give it yours (an ARN, id or name), never both; the plan fails when both or neither are set. Where the module creates a resource by default (the log group, the alarm topic, the security groups), its flag defaults to `true`, and using yours means setting it to `false`. Where yours is named by a name rather than an ARN (`bucket_name`, `delivery_stream_name`, `log_group_name`), the same name also names the resource the module creates.
+
+| Resource | Create | Use existing | Default | Notes |
+| --- | --- | --- | --- | --- |
+| Verified Access instance, user and device trust providers, logging configuration | `user_trust_provider` (and `device_trust_provider`, `access_logs`) | `existing_instance = { id, user_policy_reference_name, ... }` | Created | With an existing instance the module creates only groups, endpoints and (`hub`) the central NLB; the instance, trust providers, logging and web ACL belong to its owner, so `user_trust_provider`, `device_trust_provider`, `access_logs` (and the alarms, dashboard and metric stream that need it), `waf`, `fips_enabled`, `description`, `cidr_endpoints_custom_subdomain` and the OIDC secrets must be unset. `existing_instance` describes the attached trust providers (type, policy reference names, groups claim, device settings) so the policies render exactly as they would for providers the module created |
+| KMS key for trust providers, groups and endpoints | `create_kms_key = true` (`alias/<name_prefix>-<name>`, rotation on) | `kms_key_arn` | None (AWS owned keys) | The created key permits use only via `verified-access.<region>.amazonaws.com` by callers in this account, as [AWS documents](https://docs.aws.amazon.com/verified-access/latest/ug/encryption-at-rest.html). Deleting the key makes the encrypted configuration unreadable, so it has a 30 day deletion window |
+| CloudWatch log group | `access_logs.cloudwatch = {}` (`create = true`) | `access_logs.cloudwatch = { create = false, log_group_name = "..." }` | Created | Created log group: `/aws/<name_prefix>/<name>` (or `log_group_name`). An existing log group's retention and encryption are owned elsewhere |
+| KMS key for the log group | `access_logs.cloudwatch.create_kms_key = true` | `access_logs.cloudwatch.kms_key_arn` | None (CloudWatch Logs encryption) | Created key: usable by `logs.<region>.amazonaws.com` only for the access log group (encryption context condition); only for a log group the module creates |
+| S3 access log bucket | `access_logs.s3 = { create = true }` | `access_logs.s3 = { bucket_name = "...", bucket_owner = "..." }` | Off | Created bucket: `<name_prefix>-<name>-access-logs-<account id>` (or `bucket_name`), versioned, SSE-S3 or `kms_key_arn`, public access blocked, ACLs disabled, TLS only, lifecycle expiry (`retention_days`, default 365), optional `object_lock` (irreversible, see [operations](operations.md#tear-down)) and a policy permitting Verified Access log delivery from this account |
+| Firehose delivery stream for access logs | `access_logs.firehose = { create = true, destination_bucket_arn = "..." }` | `access_logs.firehose = { delivery_stream_name = "..." }` | Off | Created stream: `<name_prefix>-<name>-access-logs` (or `delivery_stream_name`), S3 destination only (GZIP), with its own IAM role; `destination_bucket_arn`, `prefix`, `kms_key_arn` and buffering apply only to it. Other destinations (HTTP endpoints, Splunk, OpenSearch) need a stream you create |
+| Endpoint security group | `create_security_group = true` per endpoint | `create_security_group = false` plus `security_group_ids` | Created | Supplied groups must allow the endpoint to reach its targets (and, for endpoints with `targets`, the central NLB on the listener port) |
+| Central NLB security group (`hub`) | `load_balancer.create_security_group = true` | `create_security_group = false` plus `load_balancer.security_group_ids` | Created | Supplied groups must allow the endpoint subnets in on every listener port and the targets out on their target and health check ports; the module adds no rules to them. With `create_security_group = true`, `security_group_ids` are attached as well |
+| Metric stream IAM role | `metric_stream.create_role = true` | `metric_stream.role_arn` | (one is required) | Created role: trusted by `streams.metrics.cloudwatch.amazonaws.com` in this account, may only `firehose:PutRecord` and `PutRecordBatch` on `firehose_arn` |
+| Alarm SNS topic and its key | `alarms = {}` (`create_sns_topic = true`), `alarms.create_kms_key = true` | `alarms = { create_sns_topic = false, sns_topic_arn = "..." }`, `alarms.kms_key_arn` | Topic created, unencrypted | See [operations](operations.md#alarms) |
+| WAF web ACL | `waf = { create = true }` | `waf = { web_acl_arn = "..." }` | Off | |
+| Wildcard certificate | `certificate = { domain_name = "..." }` | `domain_certificate_arn` per endpoint | Off | |
+| Route 53 hosted zone | Not offered | `dns = { zone_id = "..." }` | Off | Existing only: a public zone is usually shared with other records and delegated from a registrar or parent zone, so creating and destroying it with the module would be unsafe |
+| Network (VPC, subnets, transit gateway) | Not offered | `vpc_id`, `subnet_ids` | | The module consumes the network and never creates it |
+
+**A log archive in another account:** the module deploys to one account, so it cannot create a bucket in a central log archive account. Pass that bucket by name (`access_logs.s3 = { bucket_name = "...", bucket_owner = "<log archive account id>" }`); its policy, retention and Object Lock are owned by the log archive account, and its policy must permit log delivery from this account (the same `delivery.logs.amazonaws.com` statements the created bucket carries, with this account as `aws:SourceAccount`). Use `create = true` for a bucket in the same account as Verified Access.
+
 ## Limitations
 
 What to know before choosing Verified Access, and what the design around it implies. Workarounds are noted where they exist. Limitations of the policy language (one policy document per group and endpoint, no schema validation, context per provider and protocol) are in [access policies](policies.md#limitations-and-gotchas).
@@ -367,14 +391,12 @@ Not built yet, in no particular order. Ask if one matters to you:
 
 - Several device trust providers on one instance.
 - Groups shared to other accounts with AWS RAM.
-- Using an existing Verified Access instance instead of creating one.
 - More than 50 load balanced applications by sharding endpoints across several NLBs.
 - Endpoint security group egress to managed prefix lists, and IPv6.
 - NLB access logs and TLS listeners.
 - Custom WAF rules and WAF logging on the created web ACL.
 - Certificate subject alternative names and application domains deeper than one level below the certificate domain.
 - Structured helpers for break glass access, email domain and client IP conditions (today: `additional_conditions` or `raw_policy`).
-- Metric stream filters by metric name.
 - A module built ALB for HTTP applications.
 - Configurable resource timeouts.
 - A `region` input using the AWS provider v6 per-resource `region` argument, so one provider can deploy to several regions. Today an instance is regional: call the module once per region, each with a provider for that region.

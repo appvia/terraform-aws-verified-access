@@ -50,32 +50,32 @@ run "identity_center" {
   command = apply
 
   assert {
-    condition     = aws_verifiedaccess_instance.current.tags["Name"] == "test"
+    condition     = aws_verifiedaccess_instance.current[0].tags["Name"] == "test"
     error_message = "The instance should be named after var.name"
   }
 
   assert {
-    condition     = aws_verifiedaccess_instance.current.tags["Environment"] == "Testing"
+    condition     = aws_verifiedaccess_instance.current[0].tags["Environment"] == "Testing"
     error_message = "The instance should carry the supplied tags"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.trust_provider_type == "user"
+    condition     = aws_verifiedaccess_trust_provider.user[0].trust_provider_type == "user"
     error_message = "The user trust provider should be a user provider"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.user_trust_provider_type == "iam-identity-center"
+    condition     = aws_verifiedaccess_trust_provider.user[0].user_trust_provider_type == "iam-identity-center"
     error_message = "The user trust provider should use IAM Identity Center"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.policy_reference_name == "idc"
+    condition     = aws_verifiedaccess_trust_provider.user[0].policy_reference_name == "idc"
     error_message = "The user trust provider should use the same context key as the rendered policies"
   }
 
   assert {
-    condition     = length(aws_verifiedaccess_trust_provider.user.oidc_options) == 0
+    condition     = length(aws_verifiedaccess_trust_provider.user[0].oidc_options) == 0
     error_message = "No OIDC options should be set for IAM Identity Center"
   }
 
@@ -85,7 +85,7 @@ run "identity_center" {
   }
 
   assert {
-    condition     = aws_verifiedaccess_instance_trust_provider_attachment.user.verifiedaccess_trust_provider_id == aws_verifiedaccess_trust_provider.user.id
+    condition     = aws_verifiedaccess_instance_trust_provider_attachment.user[0].verifiedaccess_trust_provider_id == aws_verifiedaccess_trust_provider.user[0].id
     error_message = "The user trust provider should be attached to the instance"
   }
 
@@ -100,7 +100,7 @@ run "identity_center" {
   }
 
   assert {
-    condition     = output.instance_id == aws_verifiedaccess_instance.current.id
+    condition     = output.instance_id == aws_verifiedaccess_instance.current[0].id
     error_message = "The instance id should be exported"
   }
 }
@@ -162,22 +162,22 @@ run "oidc_with_native_application" {
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.user_trust_provider_type == "oidc"
+    condition     = aws_verifiedaccess_trust_provider.user[0].user_trust_provider_type == "oidc"
     error_message = "The user trust provider should use OIDC"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.oidc_options[0].client_id == "client"
+    condition     = aws_verifiedaccess_trust_provider.user[0].oidc_options[0].client_id == "client"
     error_message = "The OIDC options should be set"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.oidc_options[0].scope == "openid email groups offline_access"
+    condition     = aws_verifiedaccess_trust_provider.user[0].oidc_options[0].scope == "openid email groups offline_access"
     error_message = "The OIDC scope should default to include offline_access"
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].public_signing_key_endpoint == "https://example.okta.com/oauth2/v1/keys"
+    condition     = aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].public_signing_key_endpoint == "https://example.okta.com/oauth2/v1/keys"
     error_message = "The native application options should be set for Connectivity Client access"
   }
 }
@@ -190,8 +190,56 @@ run "customer_managed_key" {
   }
 
   assert {
-    condition     = aws_verifiedaccess_trust_provider.user.sse_specification[0].kms_key_arn == "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
+    condition     = aws_verifiedaccess_trust_provider.user[0].sse_specification[0].kms_key_arn == "arn:aws:kms:eu-west-2:111111111111:key/00000000-0000-0000-0000-000000000000"
     error_message = "The trust provider should be encrypted with the supplied key"
+  }
+}
+
+run "created_key" {
+  command = apply
+
+  variables {
+    create_kms_key = true
+  }
+
+  override_data {
+    target = data.aws_region.current
+    values = { region = "eu-west-2" }
+  }
+
+  override_data {
+    target = data.aws_caller_identity.current
+    values = { account_id = "111111111111" }
+  }
+
+  override_resource {
+    target = aws_kms_key.current
+    values = { arn = "arn:aws:kms:eu-west-2:111111111111:key/22222222-2222-2222-2222-222222222222" }
+  }
+
+  assert {
+    condition     = aws_kms_key.current[0].enable_key_rotation == true && aws_kms_alias.current[0].name == "alias/verified-access-test"
+    error_message = "A rotated key with the alias alias/<name_prefix>-<name> should be created"
+  }
+
+  assert {
+    condition = anytrue([
+      for statement in jsondecode(aws_kms_key.current[0].policy).Statement :
+      statement.Sid == "AllowVerifiedAccess" &&
+      contains(statement.Action, "kms:CreateGrant") &&
+      statement.Condition.StringEquals["kms:ViaService"] == "verified-access.eu-west-2.amazonaws.com" &&
+      statement.Condition.StringEquals["kms:CallerAccount"] == "111111111111"
+    ])
+    error_message = "The key policy should permit use only via Verified Access in this region and account"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_verifiedaccess_trust_provider.user[0].sse_specification[0].kms_key_arn == aws_kms_key.current[0].arn,
+      module.groups["platform-engineers"].id != null,
+      output.kms_key_arn == aws_kms_key.current[0].arn,
+    ])
+    error_message = "The trust provider should be encrypted with the created key, which is exported"
   }
 }
 
@@ -208,7 +256,7 @@ run "fips_enabled" {
   }
 
   assert {
-    condition     = aws_verifiedaccess_instance.current.fips_enabled == true
+    condition     = aws_verifiedaccess_instance.current[0].fips_enabled == true
     error_message = "FIPS endpoints should be configurable on the instance"
   }
 }
@@ -217,7 +265,7 @@ run "fips_disabled_by_default" {
   command = plan
 
   assert {
-    condition     = aws_verifiedaccess_instance.current.fips_enabled == false
+    condition     = aws_verifiedaccess_instance.current[0].fips_enabled == false
     error_message = "FIPS endpoints should be off by default"
   }
 }
@@ -281,11 +329,11 @@ run "oidc_separate_native_client" {
 
   assert {
     condition = alltrue([
-      aws_verifiedaccess_trust_provider.user.oidc_options[0].client_id == "browser",
-      aws_verifiedaccess_trust_provider.user.oidc_options[0].client_secret == "not-a-real-secret",
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].client_id == "native",
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].client_secret == "not-a-real-native-secret",
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].scope == "openid email groups offline_access profile",
+      aws_verifiedaccess_trust_provider.user[0].oidc_options[0].client_id == "browser",
+      aws_verifiedaccess_trust_provider.user[0].oidc_options[0].client_secret == "not-a-real-secret",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].client_id == "native",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].client_secret == "not-a-real-native-secret",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].scope == "openid email groups offline_access profile",
     ])
     error_message = "The native application should use its own client, secret and scope"
   }
@@ -317,9 +365,9 @@ run "oidc_native_client_defaults_to_browser_client" {
 
   assert {
     condition = alltrue([
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].client_id == "client",
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].client_secret == "not-a-real-secret",
-      aws_verifiedaccess_trust_provider.user.native_application_oidc_options[0].scope == "openid email groups offline_access",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].client_id == "client",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].client_secret == "not-a-real-secret",
+      aws_verifiedaccess_trust_provider.user[0].native_application_oidc_options[0].scope == "openid email groups offline_access",
     ])
     error_message = "The native application should reuse the browser client by default"
   }
@@ -370,7 +418,7 @@ run "outputs_and_tags" {
   }
 
   assert {
-    condition     = output.instance_arn == format("arn:aws:ec2:eu-west-2:111111111111:verified-access-instance/%s", aws_verifiedaccess_instance.current.id)
+    condition     = output.instance_arn == format("arn:aws:ec2:eu-west-2:111111111111:verified-access-instance/%s", aws_verifiedaccess_instance.current[0].id)
     error_message = "The instance ARN should be exported"
   }
 
@@ -385,7 +433,7 @@ run "outputs_and_tags" {
   }
 
   assert {
-    condition     = output.client_configuration_command == format("aws ec2 export-verified-access-instance-client-configuration --verified-access-instance-id %s --region eu-west-2 > ClientConfig-test.json", aws_verifiedaccess_instance.current.id)
+    condition     = output.client_configuration_command == format("aws ec2 export-verified-access-instance-client-configuration --verified-access-instance-id %s --region eu-west-2 > ClientConfig-test.json", aws_verifiedaccess_instance.current[0].id)
     error_message = "The client configuration command should be exported"
   }
 
@@ -399,7 +447,7 @@ run "outputs_and_tags" {
       local.endpoints["demo-ssh"].tags["CostCentre"] == "tenant-a",
       local.endpoints["demo-ssh"].tags["Owner"] == "platform-team",
       local.endpoints["demo-ssh"].tags["Environment"] == "Testing",
-      !contains(keys(aws_verifiedaccess_instance.current.tags), "CostCentre"),
+      !contains(keys(aws_verifiedaccess_instance.current[0].tags), "CostCentre"),
     ])
     error_message = "Group tags should be merged over the module tags on the group and its endpoints, and endpoint tags over both"
   }

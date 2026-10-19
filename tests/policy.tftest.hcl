@@ -129,6 +129,41 @@ run "oidc_group_policy" {
   }
 }
 
+## A group name is escaped for its Cedar string literal, so one holding a quote cannot close the string and OR in
+## conditions of its own (`x") || true || ["y` would otherwise permit everyone), and a backslash stays a backslash
+run "oidc_group_policy_escapes_group_names" {
+  command = plan
+
+  variables {
+    oidc_client_secret = "x"
+    user_trust_provider = {
+      type                  = "oidc"
+      policy_reference_name = "okta"
+      oidc = {
+        issuer                 = "https://example.okta.com"
+        authorization_endpoint = "https://example.okta.com/a"
+        token_endpoint         = "https://example.okta.com/t"
+        user_info_endpoint     = "https://example.okta.com/u"
+        client_id              = "c"
+      }
+    }
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["x\") || true || [\"y", "CORP\\admins"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = output.rendered_policies["group/platform-engineers"] == file("./tests/golden/group-oidc-escaped.cedar")
+    error_message = "The OIDC group names should be escaped as in tests/golden/group-oidc-escaped.cedar"
+  }
+}
+
 run "raw_group_policy" {
   command = plan
 

@@ -8,6 +8,18 @@ check "access_logs" {
   }
 }
 
+## Warn when application domains are outside the hosted zone given in dns, so their CNAMEs are left to the caller
+check "application_records" {
+  assert {
+    condition = length(local.application_records) == length(local.application_endpoints) || !local.enable_application_records
+    error_message = format(
+      "These application domains are not inside the Route 53 hosted zone %s, so the module publishes no CNAME for them; publish them where their domain is hosted (output application_domains): %s.",
+      local.dns_zone_name,
+      join(", ", sort([for name, domain in local.application_endpoints : domain if !contains(keys(local.application_records), name)])),
+    )
+  }
+}
+
 ## Warn when FIPS endpoints are requested outside the regions Verified Access supports them in (US, Canada and AWS
 ## GovCloud (US)); AWS rejects the instance there
 check "fips_region" {

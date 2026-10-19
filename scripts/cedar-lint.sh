@@ -25,6 +25,8 @@
 ##   L7  the policy contains at least one permit (a forbid-only policy denies everything)
 ##   L8  a forbid using protocol specific context (http_request, tcp_flow) guards it with context has; otherwise
 ##       it errors on the other protocol and Cedar skips it, so the forbid silently does not apply
+##   L9  no permit condition is ORed with the literal true (outside string literals and ignoring parentheses), which
+##       would match everyone: the shape of a group name or condition breaking out of its string or parentheses
 ##
 ## Usage: scripts/cedar-lint.sh [--require-parser] <file-or-directory>...
 #
@@ -118,6 +120,13 @@ lint_file() {
           has_user = (user != "" && index(statement, "context." user ".") > 0)
           has_device = (device != "" && index(statement, "context." device ".") > 0)
           if (has_device) device_permit = 1
+
+          ## Remove string literals (with their escapes) and parentheses, then look for || true or true ||
+          condition = statement
+          gsub(/"([^"\\]|\\.)*"/, "\"\"", condition)
+          gsub(/[()]/, " ", condition)
+          if (condition ~ /[|][|][ \t]*true([^A-Za-z0-9_]|$)/ || condition ~ /(^|[^A-Za-z0-9_.])true[ \t]*[|][|]/)
+            print "ERROR L9 a permit condition is ORed with the literal true, so it matches everyone"
 
           if (!scoped)
             print "ERROR L2 unscoped permit: every permit needs a when clause"

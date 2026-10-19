@@ -24,6 +24,18 @@ mock_provider "aws" {
     target = data.aws_subnet.load_balancer[1]
     values = { cidr_block = "10.10.1.0/24" }
   }
+
+  override_data {
+    target = data.aws_vpc.current[0]
+    values = {
+      cidr_block = "10.10.0.0/16"
+      cidr_block_associations = [
+        { association_id = "vpc-cidr-assoc-0123456789abcdef0", cidr_block = "10.10.0.0/16", state = "associated" },
+        { association_id = "vpc-cidr-assoc-0123456789abcdef1", cidr_block = "10.11.0.0/16", state = "associated" },
+        { association_id = "vpc-cidr-assoc-0123456789abcdef2", cidr_block = "10.12.0.0/16", state = "disassociated" },
+      ]
+    }
+  }
 }
 
 variables {
@@ -134,8 +146,8 @@ run "hub_load_balancer" {
   }
 
   assert {
-    condition     = aws_lb_target_group.current["app-ssh"].name == format("verified-access-%s", substr(sha1("test/app-ssh"), 0, 16)) && aws_lb_target_group.current["app-ssh"].tags.Name == "verified-access-test-app-ssh" && aws_lb_target_group.current["app-ssh"].target_type == "ip"
-    error_message = "The target group should be named verified-access-<hash of name/endpoint>, tagged with the readable name, with IP targets"
+    condition     = aws_lb_target_group.current["app-ssh"].name == format("verified-access-%s", substr(sha1("test/app-ssh/vpc-0123456789abcdef0/22"), 0, 16)) && aws_lb_target_group.current["app-ssh"].tags.Name == "verified-access-test-app-ssh" && aws_lb_target_group.current["app-ssh"].target_type == "ip"
+    error_message = "The target group should be named verified-access-<hash of name/endpoint/vpc/target port>, tagged with the readable name, with IP targets"
   }
 
   assert {
@@ -189,8 +201,8 @@ run "hub_load_balancer" {
   }
 
   assert {
-    condition     = length(local.endpoint_targets["own-nlb"].egress_cidr_blocks) == 1 && contains(local.endpoint_targets["own-nlb"].egress_cidr_blocks, "10.0.0.0/8")
-    error_message = "An endpoint with its own load balancer should keep the allowed egress CIDR blocks"
+    condition     = jsonencode(local.endpoint_targets["own-nlb"].egress_cidr_blocks) == jsonencode(["10.10.0.0/16", "10.11.0.0/16"]) && length(data.aws_vpc.current) == 1
+    error_message = "An endpoint with its own load balancer should send to the address ranges associated with the VPC by default"
   }
 
   assert {
@@ -590,5 +602,81 @@ run "hub_additional_security_groups" {
   assert {
     condition     = length(aws_lb.current[0].security_groups) == 2 && contains(aws_lb.current[0].security_groups, aws_security_group.load_balancer[0].id) && contains(aws_lb.current[0].security_groups, "sg-0123456789abcdef0")
     error_message = "The supplied security groups should be attached in addition to the created one"
+  }
+}
+
+## allowed_egress_cidr_blocks overrides the VPC's address ranges, and the VPC is then not read
+
+run "allowed_egress_cidr_blocks_override" {
+  command = plan
+
+  variables {
+    allowed_egress_cidr_blocks = ["10.10.5.0/24"]
+  }
+
+  assert {
+    condition     = jsonencode(local.endpoint_targets["own-nlb"].egress_cidr_blocks) == jsonencode(["10.10.5.0/24"]) && length(data.aws_vpc.current) == 0
+    error_message = "allowed_egress_cidr_blocks should replace the VPC's address ranges without reading the VPC"
+  }
+}
+
+## A target port change replaces the target group under a new name, created before the old one is destroyed, so the
+## listener moves to it in place. The two applies share state, so the second plans the replacement
+
+run "target_port_change_before" {
+  command = apply
+}
+
+run "target_port_change_after" {
+  command = apply
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the tenant services"
+        }
+        endpoints = {
+          app-ssh = {
+            type        = "load-balancer"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            target_details = [
+              { ip = "10.50.0.10", port = 2222 },
+              { ip = "10.50.0.11", port = 2222 },
+            ]
+          }
+          app-web = {
+            type                   = "load-balancer"
+            protocol               = "http"
+            port                   = 8080
+            listener_port          = 80
+            application_domain     = "app.example.com"
+            domain_certificate_arn = "arn:aws:acm:eu-west-2:111111111111:certificate/00000000-0000-0000-0000-000000000000"
+            targets                = ["10.50.0.20"]
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      aws_lb_target_group.current["app-web"].name == format("verified-access-%s", substr(sha1("test/app-web/vpc-0123456789abcdef0/8080"), 0, 16)) &&
+      aws_lb_target_group.current["app-web"].port == 8080 &&
+      aws_lb_target_group.current["app-ssh"].name == format("verified-access-%s", substr(sha1("test/app-ssh/vpc-0123456789abcdef0/22"), 0, 16))
+    )
+    error_message = "A changed target port should name a new target group; an unchanged one (per target ports leave the target group port) keeps its name"
+  }
+
+  assert {
+    condition     = aws_lb_listener.current["app-web"].port == 80 && aws_lb_listener.current["app-web"].default_action[0].target_group_arn == aws_lb_target_group.current["app-web"].arn
+    error_message = "The listener should keep its port and forward to the new target group"
+  }
+
+  assert {
+    condition     = aws_lb_target_group_attachment.current["app-ssh-10.50.0.10:2222"].port == 2222 && aws_lb_target_group_attachment.current["app-web-10.50.0.20"].port == 8080
+    error_message = "The targets should be registered on their new ports"
   }
 }

@@ -21,6 +21,12 @@ mock_provider "aws" {
       certificate_arn = "arn:aws:acm:eu-west-2:111111111111:certificate/11111111-1111-1111-1111-111111111111"
     }
   }
+
+  mock_data "aws_route53_zone" {
+    defaults = {
+      name = "example.com"
+    }
+  }
 }
 
 variables {
@@ -193,8 +199,8 @@ run "route53_records" {
   }
 
   assert {
-    condition     = toset(keys(aws_route53_record.application)) == toset(["app-web", "own-certificate"])
-    error_message = "An application record should be published for each http and https endpoint, not tcp endpoints"
+    condition     = toset(keys(aws_route53_record.application)) == toset(["app-web"])
+    error_message = "An application record should be published for each http and https endpoint in the zone, not tcp endpoints (tools.other.example.org is outside example.com)"
   }
 
   assert {
@@ -210,6 +216,9 @@ run "route53_records" {
     condition     = output.application_domains["app.example.com"] == output.endpoint_domains["app-web"] && length(output.application_domains) == 2
     error_message = "The application domains should be exported with their CNAME target"
   }
+
+  ## tools.other.example.org is outside the example.com zone, so its CNAME is left to the caller with a warning
+  expect_failures = [check.application_records]
 }
 
 run "route53_application_records_only" {
@@ -223,9 +232,12 @@ run "route53_application_records_only" {
   }
 
   assert {
-    condition     = length(aws_route53_record.validation) == 0 && length(aws_route53_record.application) == 2
+    condition     = length(aws_route53_record.validation) == 0 && length(aws_route53_record.application) == 1
     error_message = "The validation records should be optional"
   }
+
+  ## tools.other.example.org is outside the example.com zone, so its CNAME is left to the caller with a warning
+  expect_failures = [check.application_records]
 }
 
 run "route53_disabled" {
@@ -240,4 +252,29 @@ run "route53_disabled" {
     condition     = aws_acm_certificate_validation.current == []
     error_message = "No validation should be waited for by default"
   }
+}
+
+## Only application domains inside the hosted zone get a CNAME: Route 53 rejects a record outside its zone, and a
+## CNAME cannot be at the apex. The others are left to the caller, with a warning
+
+run "route53_application_records_inside_the_zone_only" {
+  command = plan
+
+  variables {
+    dns = {
+      zone_id = "Z0123456789ABCDEFGHIJ"
+    }
+  }
+
+  override_data {
+    target = data.aws_route53_zone.current[0]
+    values = { name = "Example.COM." }
+  }
+
+  assert {
+    condition     = toset(keys(aws_route53_record.application)) == toset(["app-web"]) && data.aws_route53_zone.current[0].zone_id == "Z0123456789ABCDEFGHIJ"
+    error_message = "Only application domains inside the hosted zone should get a CNAME"
+  }
+
+  expect_failures = [check.application_records]
 }

@@ -16,7 +16,7 @@ variable "kms_key_arn" {
 }
 
 variable "name" {
-  description = "The name of the Verified Access group"
+  description = "The name of the Verified Access group, its Name tag"
   type        = string
 }
 

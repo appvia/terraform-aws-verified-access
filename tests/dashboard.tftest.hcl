@@ -67,7 +67,7 @@ run "single_vpc_dashboard" {
   assert {
     condition = alltrue([
       for metric in ["AccessAllowed", "AccessDenied", "Http504", "Http5xx"] :
-      strcontains(aws_cloudwatch_dashboard.current[0].dashboard_body, format("[\"VerifiedAccess/test\",\"%s\"", metric))
+      strcontains(aws_cloudwatch_dashboard.current[0].dashboard_body, format("[\"VerifiedAccess/verified-access-test\",\"%s\"", metric))
     ])
     error_message = "The dashboard should show the four log derived metrics"
   }
@@ -142,7 +142,7 @@ run "hub_dashboard_and_metric_stream" {
 
   assert {
     condition = length(aws_cloudwatch_metric_stream.current[0].include_filter) == 2 && alltrue([
-      for namespace in ["VerifiedAccess/test", "AWS/NetworkELB"] : anytrue([for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace == namespace])
+      for namespace in ["VerifiedAccess/verified-access-test", "AWS/NetworkELB"] : anytrue([for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace == namespace])
     ])
     error_message = "The metric stream should include the log derived and load balancer namespaces"
   }
@@ -160,7 +160,7 @@ run "single_vpc_metric_stream" {
   }
 
   assert {
-    condition     = length(aws_cloudwatch_metric_stream.current[0].include_filter) == 1 && anytrue([for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace == "VerifiedAccess/test"])
+    condition     = length(aws_cloudwatch_metric_stream.current[0].include_filter) == 1 && anytrue([for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace == "VerifiedAccess/verified-access-test"])
     error_message = "Without the central load balancer only the log derived namespace should be streamed"
   }
 }
@@ -260,9 +260,9 @@ run "metric_stream_include" {
     condition = {
       for filter in aws_cloudwatch_metric_stream.current[0].include_filter : filter.namespace => toset(filter.metric_names)
       } == {
-      "VerifiedAccess/test" = toset(["AccessDenied", "Http504"])
-      "AWS/NetworkELB"      = toset(["HealthyHostCount", "ProcessedBytes", "UnHealthyHostCount"])
-      "AWS/Logs"            = toset(["IncomingLogEvents"])
+      "VerifiedAccess/verified-access-test" = toset(["AccessDenied", "Http504"])
+      "AWS/NetworkELB"                      = toset(["HealthyHostCount", "ProcessedBytes", "UnHealthyHostCount"])
+      "AWS/Logs"                            = toset(["IncomingLogEvents"])
     }
     error_message = "The metric stream should include only the chosen metrics, by namespace and metric name"
   }

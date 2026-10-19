@@ -172,6 +172,7 @@ The full description, with the layers of checks, is in [security: how policies a
 | L6 | Never fails: lists every raw policy with its owner and justification, so reviewers always see them |
 | L7 | The policy has no `permit` at all (a `forbid` only policy denies everything) |
 | L8 | A `forbid` uses `context.http_request` or `context.tcp_flow` without a `context has "http_request"` (or `"tcp_flow"`) guard: on the other protocol it errors and is skipped, so it silently does not apply ([example 7](#7-read-only-auditors-permit-plus-forbid)) |
+| L9 | A `permit` condition is ORed with the literal `true` (`true` on either side of an or, outside string literals and ignoring parentheses), which matches everyone: the shape of a group name or condition breaking out of its string or parentheses, or a careless raw policy |
 
 The lint is a text check, not a full analysis. It splits statements on `;`, so avoid semicolons inside strings in raw Cedar. Beyond L8 it does not check `forbid` statements, `unless` clauses or whether a condition is correct, only that a `permit` is scoped. A `permit` written only with `unless` fails L2: use `when`.
 
@@ -277,7 +278,7 @@ A platform engineer passes the group policy but fails this one, so is denied. Li
 
 ### 4. An extra condition: email domain
 
-Anyone the group allows, but only with an `example.com` email address. `additional_conditions` takes Cedar expressions, one line each, no semicolons; each is wrapped in parentheses and joined with **and**.
+Anyone the group allows, but only with an `example.com` email address. `additional_conditions` takes Cedar expressions, one line each, no semicolons; each is wrapped in parentheses and joined with **and**. The plan rejects a condition whose brackets do not balance outside its string literals (or nest more than ten deep), or that holds `//`, an unterminated string or the keywords `permit`, `forbid`, `when` or `unless`, so a condition cannot close its parentheses and widen the policy ([what the module guarantees](security.md#endpoint-policies)). Group names and ids are escaped in their string literals, so they cannot either.
 
 ```hcl
         tools-web = {

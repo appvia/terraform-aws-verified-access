@@ -45,7 +45,7 @@ locals {
     local.enable_access_log_firehose ? aws_kinesis_firehose_delivery_stream.access_logs[0].name : var.access_logs.firehose.delivery_stream_name
   )
   ## The CloudWatch metric namespace for the log derived metrics
-  metric_namespace = format("VerifiedAccess/%s", var.name)
+  metric_namespace = format("VerifiedAccess/%s", local.resource_name)
 
   ## The log derived metrics, by key: Verified Access publishes no CloudWatch metrics of its own
   ## (https://docs.aws.amazon.com/verified-access/latest/ug/monitoring-overview.html), so each is a metric filter

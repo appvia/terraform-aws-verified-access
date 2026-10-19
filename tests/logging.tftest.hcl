@@ -117,8 +117,8 @@ run "cloudwatch_destination" {
   }
 
   assert {
-    condition     = aws_cloudwatch_log_metric_filter.access["http-504"].metric_transformation[0].namespace == "VerifiedAccess/test"
-    error_message = "The metrics should be published to VerifiedAccess/<name>"
+    condition     = aws_cloudwatch_log_metric_filter.access["http-504"].metric_transformation[0].namespace == "VerifiedAccess/verified-access-test"
+    error_message = "The metrics should be published to VerifiedAccess/<name_prefix>-<name>"
   }
 
   assert {
@@ -327,7 +327,7 @@ run "selected_metric_filters" {
   assert {
     condition = (
       toset(keys(output.metrics)) == toset(["access-denied", "http-504", "incoming-log-events", "incoming-bytes"]) &&
-      output.metrics["access-denied"].namespace == "VerifiedAccess/test" && output.metrics["access-denied"].source == "log metric filter" &&
+      output.metrics["access-denied"].namespace == "VerifiedAccess/verified-access-test" && output.metrics["access-denied"].source == "log metric filter" &&
       output.metrics["incoming-log-events"].dimensions["LogGroupName"] == "/aws/verified-access/test"
     )
     error_message = "The metrics output should list the chosen log derived metrics and the log group metrics"

@@ -50,8 +50,8 @@ run "identity_center" {
   command = apply
 
   assert {
-    condition     = aws_verifiedaccess_instance.current[0].tags["Name"] == "test"
-    error_message = "The instance should be named after var.name"
+    condition     = aws_verifiedaccess_instance.current[0].tags["Name"] == "verified-access-test"
+    error_message = "The instance should be tagged <name_prefix>-<name>"
   }
 
   assert {

@@ -271,7 +271,7 @@ The pipeline posts the plan as a comment on the pull request. A plan lists every
 - **Only additions.** Nothing should be changed or destroyed on a first run.
 - **The resources you expect:** a Verified Access instance, a trust provider, a group per entry in `groups`, an endpoint per application, the central load balancer with a listener and target group per endpoint, the log group, the certificate, the alarms, the dashboard and the web ACL.
 - **The policy:** the group's policy lists the right group IDs and nothing else.
-- **Names:** resources are named `verified-access-<name>...` with your deployment name.
+- **Names:** resources are named `<name_prefix>-<name>...` with your deployment name (`name_prefix` defaults to `verified-access`).
 
 If the plan stops with an error, the message says which rule was broken (for example "Endpoints with targets must use different ports"). Fix the values and push again.
 
@@ -464,7 +464,7 @@ If the domain is a Route 53 public hosted zone in the same account, give the mod
   }
 ```
 
-`dns.create_validation_records = false` or `dns.create_application_records = false` leave either kind of record to you. The pipeline role then also needs `route53:ChangeResourceRecordSets`, `route53:GetChange`, `route53:GetHostedZone` and `route53:ListResourceRecordSets` on that zone.
+The module publishes a CNAME only for application domains inside the zone (below its apex: a CNAME cannot be at the apex, and Route 53 rejects a record outside its zone); for any other application domain the plan warns and leaves the CNAME to you (output `application_domains`). `dns.create_validation_records = false` or `dns.create_application_records = false` leave either kind of record to you. The pipeline role then also needs `route53:ChangeResourceRecordSets`, `route53:GetChange`, `route53:GetHostedZone` and `route53:ListResourceRecordSets` on that zone.
 
 ### Tag for chargeback
 

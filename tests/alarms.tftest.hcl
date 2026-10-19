@@ -93,7 +93,7 @@ run "default_alarms" {
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.current["access-denied"].threshold == 20 && aws_cloudwatch_metric_alarm.current["access-denied"].namespace == "VerifiedAccess/test"
+    condition     = aws_cloudwatch_metric_alarm.current["access-denied"].threshold == 20 && aws_cloudwatch_metric_alarm.current["access-denied"].namespace == "VerifiedAccess/verified-access-test"
     error_message = "The denial alarm should default to 20 on the log derived metric"
   }
 
@@ -478,7 +478,7 @@ run "custom_alarms" {
   assert {
     condition = alltrue([
       aws_cloudwatch_metric_alarm.custom["denied-burst"].alarm_name == "verified-access-test-denied-burst",
-      aws_cloudwatch_metric_alarm.custom["denied-burst"].namespace == "VerifiedAccess/test",
+      aws_cloudwatch_metric_alarm.custom["denied-burst"].namespace == "VerifiedAccess/verified-access-test",
       aws_cloudwatch_metric_alarm.custom["denied-burst"].metric_name == "AccessDenied",
       aws_cloudwatch_metric_alarm.custom["denied-burst"].statistic == "Sum",
       aws_cloudwatch_metric_alarm.custom["denied-burst"].period == 60,

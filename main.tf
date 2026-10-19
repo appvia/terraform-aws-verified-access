@@ -7,7 +7,7 @@ resource "aws_verifiedaccess_instance" "current" {
   cidr_endpoints_custom_subdomain = var.cidr_endpoints_custom_subdomain
   description                     = var.description
   fips_enabled                    = var.fips_enabled
-  tags                            = merge(local.tags, { Name = var.name })
+  tags                            = merge(local.tags, { Name = local.resource_name })
 }
 
 ## Provision the user identity trust provider (IAM Identity Center or OIDC); an existing instance has its own
@@ -16,7 +16,7 @@ resource "aws_verifiedaccess_trust_provider" "user" {
 
   description              = format("User identity trust provider for %s", var.name)
   policy_reference_name    = local.user_policy_reference
-  tags                     = merge(local.tags, { Name = format("%s-user", var.name) })
+  tags                     = merge(local.tags, { Name = format("%s-user", local.resource_name) })
   trust_provider_type      = "user"
   user_trust_provider_type = var.user_trust_provider.type
 
@@ -68,7 +68,7 @@ resource "aws_verifiedaccess_trust_provider" "device" {
   description                = format("Device trust provider for %s", var.name)
   device_trust_provider_type = var.device_trust_provider.type
   policy_reference_name      = local.device_policy_reference
-  tags                       = merge(local.tags, { Name = format("%s-device", var.name) })
+  tags                       = merge(local.tags, { Name = format("%s-device", local.resource_name) })
   trust_provider_type        = "device"
 
   device_options {
@@ -109,7 +109,7 @@ module "groups" {
   description     = each.value.description
   instance_id     = local.instance_id
   kms_key_arn     = local.kms_key_arn
-  name            = format("%s-%s", var.name, each.key)
+  name            = format("%s-%s", local.resource_name, each.key)
   policy_document = local.group_policies[each.key]
   tags            = merge(local.tags, each.value.tags)
 

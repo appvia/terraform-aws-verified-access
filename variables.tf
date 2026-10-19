@@ -226,7 +226,8 @@ variable "alarms" {
     ## The email addresses subscribed to the topic; each recipient must confirm the subscription
     email_addresses = optional(list(string), [])
     ## The role the deployment pipeline assumes; when set, any other principal changing Verified Access raises an alarm
-    ## (the changed-outside-pipeline rule)
+    ## (the changed-outside-pipeline rule). The rule is account wide (CloudTrail does not name the instance consistently),
+    ## so with several deployments in one account use one pipeline role and enable the rule in one deployment only
     pipeline_role_name = optional(string, null)
     ## Additional ARNs notified on alarm and on recovery, e.g. an SNS topic subscribed by PagerDuty or AWS Chatbot
     additional_action_arns = optional(list(string), [])
@@ -397,13 +398,13 @@ variable "alarms" {
 }
 
 variable "allowed_egress_cidr_blocks" {
-  description = "The CIDR blocks endpoint security groups may send traffic to when the target range cannot be derived (load-balancer, network-interface and rds endpoints)"
+  description = "The CIDR blocks endpoint security groups may send traffic to when the target range cannot be derived (load-balancer endpoints with their own load balancer, network-interface and rds endpoints); null (the default) uses the address ranges associated with var.vpc_id, which those targets must be in. Set it to narrow the range, or per endpoint with egress_cidr_blocks"
   type        = list(string)
-  default     = ["10.0.0.0/8"]
+  default     = null
 
   validation {
-    condition     = alltrue([for cidr in var.allowed_egress_cidr_blocks : can(cidrhost(cidr, 0))])
-    error_message = "All allowed_egress_cidr_blocks must be valid CIDR blocks."
+    condition     = var.allowed_egress_cidr_blocks == null ? true : length(var.allowed_egress_cidr_blocks) > 0 && alltrue([for cidr in var.allowed_egress_cidr_blocks : can(cidrhost(cidr, 0))])
+    error_message = "The allowed_egress_cidr_blocks must be null (the VPC's address ranges) or a non-empty list of valid CIDR blocks."
   }
 }
 
@@ -473,7 +474,8 @@ variable "dns" {
     zone_id = string
     ## Publish the validation records of the module certificate
     create_validation_records = optional(bool, true)
-    ## Publish a CNAME from each http and https endpoint application_domain to its endpoint domain
+    ## Publish a CNAME from each http and https endpoint application_domain inside the zone (below its apex) to its
+    ## endpoint domain; domains outside the zone are skipped with a warning and left to the caller
     create_application_records = optional(bool, true)
     ## The TTL in seconds of the records
     ttl = optional(number, 300)
@@ -616,7 +618,7 @@ variable "groups" {
     description = optional(string, null)
     ## The structured access policy (preferred), rendered to Cedar by the module
     policy = optional(object({
-      # The identity groups permitted: Identity Center group ids, or OIDC group names
+      # The identity groups permitted: Identity Center group ids, or OIDC group names (escaped in the Cedar strings)
       identity_groups = list(string)
       # The team accountable for this access
       owner = string
@@ -733,7 +735,8 @@ variable "groups" {
       policy = optional(object({
         ## The identity groups permitted to this endpoint (any of); empty leaves the group policy's audience
         identity_groups = optional(list(string), [])
-        ## Extra Cedar conditions, each one line, all of which must hold
+        ## Extra Cedar conditions, all of which must hold: each one line, rendered in its own parentheses, so its
+        ## brackets must balance outside string literals (at most ten deep), without ;, //, permit, forbid, when or unless
         additional_conditions = optional(list(string), [])
         ## The team accountable for this access, defaults to the group policy owner
         owner = optional(string, null)
@@ -776,17 +779,19 @@ variable "groups" {
     error_message = "A group policy must list at least one identity group; an empty list would permit anyone who can sign in."
   }
 
-  # V11 (Identity Center): identity groups are group ids, not display names
+  # V11 (Identity Center): identity groups are group ids (a UUID, optionally prefixed with a 10 character identity
+  # store id, as the IdentityStore GroupId pattern allows), not display names
   validation {
     condition = try(coalesce(try(var.user_trust_provider.type, null), try(var.existing_instance.user_trust_provider_type, null)), null) != "iam-identity-center" ? true : alltrue([
       for group in values(var.groups) : group.policy == null ? true : alltrue([
-        for id in group.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
+        for id in group.policy.identity_groups : can(regex("^([0-9a-f]{10}-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
       ])
     ])
-    error_message = "With IAM Identity Center, identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111), not display names."
+    error_message = "With IAM Identity Center, identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111, or 0123456789-11111111-1111-1111-1111-111111111111), not display names."
   }
 
-  # V12: every policy has an accountable owner and a single-line justification
+  # V12: every policy has an accountable owner and a single-line justification; both are rendered into // header
+  # comments, which a line break (LF or CR) would end
   validation {
     condition = alltrue([
       for policy in flatten([
@@ -795,8 +800,8 @@ variable "groups" {
         ]) : (
         length(trimspace(policy.owner)) > 0 &&
         length(trimspace(policy.justification)) >= 10 &&
-        !strcontains(policy.owner, "\n") &&
-        !strcontains(policy.justification, "\n")
+        !can(regex("[\r\n]", policy.owner)) &&
+        !can(regex("[\r\n]", policy.justification))
       )
     ])
     error_message = "Every policy needs a non-empty owner and a single-line justification of at least 10 characters."
@@ -944,14 +949,11 @@ variable "groups" {
     error_message = "Endpoints with targets must use different listener ports, as each has its own listener on the central load balancer; set listener_port to put several services on the same port."
   }
 
-  # V29: nlb is reserved for the load balancer security group (verified-access-<name>-nlb)
+  # V29: with topology hub, nlb is reserved for the load balancer security group (<name_prefix>-<name>-nlb), which
+  # every endpoint security group (<name_prefix>-<name>-<endpoint>) would otherwise collide with
   validation {
-    condition = alltrue(flatten([
-      for group in values(var.groups) : [
-        for name, endpoint in group.endpoints : name != "nlb" if length(endpoint.targets) + length(endpoint.target_details) > 0
-      ]
-    ]))
-    error_message = "Endpoints with targets must be named other than nlb, which is reserved for the load balancer security group."
+    condition     = var.topology != "hub" || !contains(flatten([for group in values(var.groups) : keys(group.endpoints)]), "nlb")
+    error_message = "With topology hub, endpoints must be named other than nlb, which is reserved for the load balancer security group (<name_prefix>-<name>-nlb)."
   }
 
   # V30: endpoints with targets use the module subnets, which the central load balancer accepts traffic from
@@ -1003,10 +1005,10 @@ variable "groups" {
   validation {
     condition = try(coalesce(try(var.user_trust_provider.type, null), try(var.existing_instance.user_trust_provider_type, null)), null) != "iam-identity-center" ? true : alltrue([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? true : alltrue([
-        for id in endpoint.policy.identity_groups : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
+        for id in endpoint.policy.identity_groups : can(regex("^([0-9a-f]{10}-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
       ])
     ])
-    error_message = "With IAM Identity Center, endpoint policy identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111), not display names."
+    error_message = "With IAM Identity Center, endpoint policy identity_groups must be group ids (e.g. 11111111-1111-1111-1111-111111111111, or 0123456789-11111111-1111-1111-1111-111111111111), not display names."
   }
 
   # V49: an endpoint policy owner and justification are set together, like any policy's (V12)
@@ -1016,8 +1018,8 @@ variable "groups" {
         (endpoint.policy.owner == null) == (endpoint.policy.justification == null) && (endpoint.policy.owner == null ? true : (
           length(trimspace(endpoint.policy.owner)) > 0 &&
           length(trimspace(endpoint.policy.justification)) >= 10 &&
-          !strcontains(endpoint.policy.owner, "\n") &&
-          !strcontains(endpoint.policy.justification, "\n")
+          !can(regex("[\r\n]", endpoint.policy.owner)) &&
+          !can(regex("[\r\n]", endpoint.policy.justification))
         ))
       )
     ])
@@ -1029,10 +1031,30 @@ variable "groups" {
   validation {
     condition = alltrue(flatten([
       for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? [] : [
-        for condition in endpoint.policy.additional_conditions : length(trimspace(condition)) > 0 && !strcontains(condition, ";") && !strcontains(condition, "\n")
+        for condition in endpoint.policy.additional_conditions : length(trimspace(condition)) > 0 && !strcontains(condition, ";") && !can(regex("[\r\n]", condition))
       ]
     ]))
     error_message = "Each endpoint policy additional_conditions entry must be a single-line Cedar expression without semicolons, e.g. context.http_request.http_method == \"GET\"."
+  }
+
+  # V83: an additional condition cannot leave the parentheses it is rendered in. Outside its string literals ("...",
+  # with \" and \\ escapes), which are removed first, its brackets ((), [] and {}) are balanced and never close more
+  # than they opened, and it has no // comment, unterminated string or permit, forbid, when or unless keyword. Without
+  # loops, the brackets are matched by removing innermost pairs ten times, so brackets may nest at most ten deep
+  validation {
+    condition = alltrue(flatten([
+      for endpoint in flatten([for group in values(var.groups) : values(group.endpoints)]) : endpoint.policy == null ? [] : [
+        for stripped in [
+          for condition in endpoint.policy.additional_conditions : replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+            replace(condition, local.cedar_string_literal_regex, " _ "),
+            local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "),
+            local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "),
+            local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "), local.cedar_bracket_pair_regex, " "),
+          local.cedar_bracket_pair_regex, " ")
+        ] : !can(regex("[\\[\\](){}\";]|//|(^|[^A-Za-z0-9_])(permit|forbid|when|unless)([^A-Za-z0-9_]|$)", stripped))
+      ]
+    ]))
+    error_message = "Each endpoint policy additional_conditions entry must be one Cedar expression: outside string literals its brackets ((), [] and {}) must be balanced (nested at most ten deep), and it cannot contain //, an unterminated string or the keywords permit, forbid, when or unless, so it cannot close the parentheses it is rendered in and widen the policy. Use raw_policy for anything else."
   }
 
   # V53: detailed targets are IPv4 addresses with valid ports and availability zones, and replace targets
@@ -1423,7 +1445,7 @@ variable "waf" {
   type = object({
     ## The ARN of an existing regional web ACL to associate
     web_acl_arn = optional(string, null)
-    ## Create a regional web ACL (verified-access-<name>) with the AWS common, known bad inputs and IP reputation rule groups
+    ## Create a regional web ACL (<name_prefix>-<name>) with the AWS common, known bad inputs and IP reputation rule groups
     create = optional(bool, false)
   })
   default = null

@@ -7,6 +7,14 @@ data "aws_partition" "current" {}
 ## Find the current region, used to build the instance ARN and the dashboard widgets
 data "aws_region" "current" {}
 
+## Find the module VPC, whose address ranges are the default egress of endpoint security groups whose target range
+## cannot be derived (allowed_egress_cidr_blocks unset); only read when such an endpoint exists
+data "aws_vpc" "current" {
+  count = local.enable_vpc_egress_lookup ? 1 : 0
+
+  id = var.vpc_id
+}
+
 ## Find the module subnets, whose ranges the endpoints and the central load balancer exchange traffic within
 data "aws_subnet" "load_balancer" {
   count = local.enable_load_balancer ? length(var.subnet_ids) : 0

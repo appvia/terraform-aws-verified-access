@@ -49,6 +49,22 @@ locals {
       })
     }
   ]...)
+  ## Indicates an endpoint security group sends to the VPC's address ranges: allowed_egress_cidr_blocks is unset and an
+  ## endpoint whose target range cannot be derived (not cidr, not on the central load balancer) has the module security
+  ## group without egress_cidr_blocks of its own
+  enable_vpc_egress_lookup = var.allowed_egress_cidr_blocks == null && anytrue([
+    for name, endpoint in local.endpoints : (
+      endpoint.create_security_group && endpoint.egress_cidr_blocks == null && endpoint.type != "cidr" &&
+      !(var.topology == "hub" && endpoint.type == "load-balancer" && length(endpoint.targets) + length(endpoint.target_details) > 0)
+    )
+  ])
+  ## The CIDR blocks endpoint security groups send to when the target range cannot be derived: the supplied ones, or
+  ## the address ranges associated with the VPC
+  allowed_egress_cidr_blocks = var.allowed_egress_cidr_blocks != null ? var.allowed_egress_cidr_blocks : (
+    local.enable_vpc_egress_lookup ? sort(distinct([
+      for association in data.aws_vpc.current[0].cidr_block_associations : association.cidr_block if association.state == "associated"
+    ])) : []
+  )
   ## The resolved targets of each endpoint: endpoints with targets use the central load balancer (referenced through
   ## their listener, so it exists first), connect to it on their listener port and send only to the module subnets;
   ## http and https endpoints without their own certificate use the module certificate
@@ -61,7 +77,7 @@ locals {
       domain_certificate_arn = endpoint.domain_certificate_arn != null || endpoint.application_domain == null ? endpoint.domain_certificate_arn : local.certificate_arn
       egress_cidr_blocks = coalesce(
         endpoint.egress_cidr_blocks,
-        contains(keys(local.load_balancer_endpoints), name) ? local.load_balancer_cidr_blocks : var.allowed_egress_cidr_blocks,
+        contains(keys(local.load_balancer_endpoints), name) ? local.load_balancer_cidr_blocks : local.allowed_egress_cidr_blocks,
       )
       load_balancer_arn = contains(keys(local.load_balancer_endpoints), name) ? aws_lb_listener.current[name].load_balancer_arn : endpoint.load_balancer_arn
     }

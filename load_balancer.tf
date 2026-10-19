@@ -162,14 +162,16 @@ resource "aws_security_group" "load_balancer" {
 }
 
 ## Provision a target group per endpoint, with the service addresses as IP targets. Target group names are unique per
-## account and region and at most 32 characters, so the name is <name_prefix>-<hash of name/endpoint>: unique per
-## deployment, free of length rules, and within the <name_prefix>-* prefix pipeline roles are scoped to. The
-## readable name is in the Name tag
+## account and region and at most 32 characters, so the name is <name_prefix>-<hash of name/endpoint/vpc/target
+## port>: unique per deployment, free of length rules, and within the <name_prefix>-* prefix pipeline roles are scoped
+## to. The readable name is in the Name tag. The port and VPC force a new target group, and are in the hash so the new
+## one has a new name and can be created before the old one is destroyed: the listener moves to it in place, then the
+## old one (no longer in use) is deleted
 resource "aws_lb_target_group" "current" {
   for_each = local.load_balancer_endpoints
 
   deregistration_delay = tostring(each.value.deregistration_delay)
-  name                 = format("%s-%s", var.name_prefix, substr(sha1(format("%s/%s", var.name, each.key)), 0, local.target_group_hash_length))
+  name                 = format("%s-%s", var.name_prefix, substr(sha1(format("%s/%s/%s/%d", var.name, each.key, var.vpc_id, each.value.target_port)), 0, local.target_group_hash_length))
   port                 = each.value.target_port
   preserve_client_ip   = tostring(each.value.preserve_client_ip)
   protocol             = "TCP"
@@ -186,10 +188,16 @@ resource "aws_lb_target_group" "current" {
     protocol            = each.value.health_check.protocol
     unhealthy_threshold = each.value.health_check.unhealthy_threshold
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 ## Register the service addresses on their target ports; targets outside the load balancer VPC must use availability
-## zone "all"
+## zone "all". A replaced target group replaces its attachments (target_group_arn forces a new attachment), so the
+## targets are registered in the new target group. They are not created before destroyed: an attachment replaced on
+## the same target group (e.g. a new availability zone) would otherwise deregister the target it had just registered
 resource "aws_lb_target_group_attachment" "current" {
   for_each = local.load_balancer_attachments
 
@@ -199,7 +207,8 @@ resource "aws_lb_target_group_attachment" "current" {
   target_id         = each.value.target
 }
 
-## Provision a listener per endpoint on its listener port, forwarding to its target group
+## Provision a listener per endpoint on its listener port, forwarding to its target group. It waits for the target
+## registrations, so a replaced target group has its targets before the listener forwards to it
 resource "aws_lb_listener" "current" {
   for_each = local.load_balancer_endpoints
 
@@ -213,4 +222,6 @@ resource "aws_lb_listener" "current" {
     target_group_arn = aws_lb_target_group.current[each.key].arn
     type             = "forward"
   }
+
+  depends_on = [aws_lb_target_group_attachment.current]
 }

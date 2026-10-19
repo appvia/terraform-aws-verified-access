@@ -1,7 +1,13 @@
 locals {
+  ## The patterns V83 checks additional conditions with: a Cedar string literal (with \" and \\ escapes), and an
+  ## innermost pair of brackets, i.e. one holding no other bracket (nor a stray quote, which then stays and is rejected)
+  cedar_string_literal_regex = "/\"(?:[^\"\\\\]|\\\\.)*\"/"
+  cedar_bracket_pair_regex   = "/\\([^\\[\\](){}\"]*\\)|\\[[^\\[\\](){}\"]*\\]|\\{[^\\[\\](){}\"]*\\}/"
+
   ## The identity group conditions per structured group (group/<name>) and endpoint (endpoint/<name>) policy, sorted
   ## so the same input always renders the same policy. IAM Identity Center keys groups by id (has); OIDC providers
-  ## list group names (contains) in the configured groups claim
+  ## list group names (contains) in the configured groups claim. Each id or name is escaped for a Cedar string literal
+  ## (backslash, then double quote), so a group name cannot close the string and add conditions of its own
   identity_group_conditions = {
     for key, ids in merge(
       { for name, group in var.groups : format("group/%s", name) => group.policy.identity_groups if group.policy != null },
@@ -9,8 +15,8 @@ locals {
       ) : key => [
       for id in sort(distinct(ids)) : (
         local.user_trust_provider_type == "iam-identity-center"
-        ? format("context.%s.%s has \"%s\"", local.user_policy_reference, local.user_groups_attribute, id)
-        : format("context.%s.%s.contains(\"%s\")", local.user_policy_reference, local.user_groups_attribute, id)
+        ? format("context.%s.%s has \"%s\"", local.user_policy_reference, local.user_groups_attribute, replace(replace(id, "\\", "\\\\"), "\"", "\\\""))
+        : format("context.%s.%s.contains(\"%s\")", local.user_policy_reference, local.user_groups_attribute, replace(replace(id, "\\", "\\\\"), "\"", "\\\""))
       )
     ]
   }
@@ -27,9 +33,10 @@ locals {
     format("context.%s.device.is_managed == true", local.device_policy_reference)
   )
 
-  ## The accountable owner and justification of each group, structured or raw
-  group_owners         = { for name, group in var.groups : name => trimspace(try(group.policy.owner, group.raw_policy.owner)) }
-  group_justifications = { for name, group in var.groups : name => trimspace(try(group.policy.justification, group.raw_policy.justification)) }
+  ## The accountable owner and justification of each group, structured or raw. Header values are // comments, which a
+  ## line break would end, so line breaks are rejected (V12, V49) and, as a second line of defence, replaced here
+  group_owners         = { for name, group in var.groups : name => replace(trimspace(try(group.policy.owner, group.raw_policy.owner)), "/[\r\n]/", " ") }
+  group_justifications = { for name, group in var.groups : name => replace(trimspace(try(group.policy.justification, group.raw_policy.justification)), "/[\r\n]/", " ") }
 
   ## The trust provider context lines shared by every policy header
   context_headers = compact([
@@ -72,7 +79,8 @@ locals {
   }
 
   ## The conditions of each structured endpoint policy, combined with AND: its identity groups (any of), its additional
-  ## conditions (each parenthesised, so an || inside one cannot widen the others) and, when sensitive, device posture
+  ## conditions (each parenthesised; V83 rejects a condition whose brackets are unbalanced outside string literals, so
+  ## one cannot close the parenthesis and OR in conditions of its own) and, when sensitive, device posture
   endpoint_conditions = {
     for name, endpoint in local.policy_endpoints : name => concat(
       contains(keys(local.identity_group_conditions), format("endpoint/%s", name)) ? [
@@ -91,8 +99,8 @@ locals {
       format("// name: %s", name),
       format("// source: %s", endpoint.raw_policy != null ? "raw" : "structured"),
       format("// sensitive: %t", endpoint.sensitive),
-      format("// owner: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.owner) : try(trimspace(endpoint.policy.owner), local.group_owners[endpoint.group])),
-      format("// justification: %s", endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.justification) : try(trimspace(endpoint.policy.justification), local.group_justifications[endpoint.group])),
+      format("// owner: %s", replace(endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.owner) : try(trimspace(endpoint.policy.owner), local.group_owners[endpoint.group]), "/[\r\n]/", " ")),
+      format("// justification: %s", replace(endpoint.raw_policy != null ? trimspace(endpoint.raw_policy.justification) : try(trimspace(endpoint.policy.justification), local.group_justifications[endpoint.group]), "/[\r\n]/", " ")),
     ], local.context_headers)
   }
 

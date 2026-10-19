@@ -1,4 +1,4 @@
-## Input validation tests: every rule (V1-V82) has a run proving invalid input is rejected at plan time.
+## Input validation tests: every rule (V1-V83) has a run proving invalid input is rejected at plan time.
 ## Each invalid run breaks exactly one rule against the valid baseline below.
 
 mock_provider "aws" {
@@ -1021,6 +1021,55 @@ run "invalid_targets_endpoint_named_nlb" {
   }
 
   expect_failures = [var.groups]
+}
+
+run "invalid_hub_endpoint_without_targets_named_nlb" {
+  command = plan
+
+  variables {
+    topology = "hub"
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          nlb = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "valid_single_vpc_endpoint_named_nlb" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          nlb = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+          }
+        }
+      }
+    }
+  }
 }
 
 run "invalid_targets_subnet_override" {
@@ -2911,4 +2960,438 @@ run "invalid_alarm_topic_neither" {
   }
 
   expect_failures = [var.alarms]
+}
+
+## V83: additional conditions cannot leave the parentheses they are rendered in
+
+run "valid_endpoint_policy_condition_with_brackets_in_strings_and_nesting" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.address like \"*) || (true\" && (context.idc.user.email.address like \"*@example.com\" || [\"a\\\"b\", \"c\\\\\"].contains(context.idc.user.email.address))"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition     = strcontains(output.rendered_policies["endpoint/demo-ssh"], format("\n  (%s)\n};", var.groups["platform-engineers"].endpoints["demo-ssh"].policy.additional_conditions[0]))
+    error_message = "A condition whose brackets balance outside its string literals should be accepted and rendered in its own parentheses"
+  }
+}
+
+run "invalid_endpoint_policy_condition_closing_its_parentheses" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.address like \"*\") || (true"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_closing_its_parentheses_on_sensitive_endpoint" {
+  command = plan
+
+  variables {
+    device_trust_provider = {
+      type      = "crowdstrike"
+      tenant_id = "tenant"
+    }
+
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            sensitive   = true
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["true) || (true) || (true"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_unbalanced_brackets" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["[context.idc.user.email.address].contains(\"a\""]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_too_deeply_nested" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["(((((((((((context.idc.user.email.verified)))))))))))"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_comment" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.verified // comment"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_unterminated_string" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.address == \"a"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_stray_quote_inside_brackets" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.verified && [\"a\", \"b\\\\\"\"].contains(context.idc.user.email.address)"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_keyword" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.verified || permit"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_condition_with_line_break" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups       = ["22222222-2222-2222-2222-222222222222"]
+              additional_conditions = ["context.idc.user.email.verified\r|| true"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+
+## V11 and V48 (Identity Center): group ids may carry an identity store prefix
+
+run "valid_identity_center_prefixed_group_id" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["0123456789-11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["abcdef0123-22222222-2222-2222-2222-222222222222"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      strcontains(output.rendered_policies["group/platform-engineers"], "context.idc.groups has \"0123456789-11111111-1111-1111-1111-111111111111\"") &&
+      strcontains(output.rendered_policies["endpoint/demo-ssh"], "context.idc.groups has \"abcdef0123-22222222-2222-2222-2222-222222222222\"")
+    )
+    error_message = "Identity Center group ids with an identity store prefix should be accepted and rendered"
+  }
+}
+
+run "invalid_identity_center_group_id_bad_prefix" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["d-12345678-11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_identity_center_group_id_bad_prefix" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["ABCDEF0123-22222222-2222-2222-2222-222222222222"]
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+## V12 and V49: header values cannot end their // comment with a carriage return
+
+run "invalid_owner_with_carriage_return" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team\rpermit(principal, action, resource);"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
+}
+
+run "invalid_endpoint_policy_justification_with_carriage_return" {
+  command = plan
+
+  variables {
+    groups = {
+      platform-engineers = {
+        policy = {
+          identity_groups = ["11111111-1111-1111-1111-111111111111"]
+          owner           = "platform-team"
+          justification   = "Platform engineers operate the demo tenant hosts"
+        }
+        endpoints = {
+          demo-ssh = {
+            type        = "cidr"
+            cidr        = "10.101.0.0/24"
+            port_ranges = [{ from_port = 22, to_port = 22 }]
+            policy = {
+              identity_groups = ["11111111-1111-1111-1111-111111111111"]
+              owner           = "security-team"
+              justification   = "Only the on-call engineers\rpermit(principal, action, resource);"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  expect_failures = [var.groups]
 }

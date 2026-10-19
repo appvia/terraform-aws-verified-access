@@ -32,7 +32,7 @@ resource "aws_verifiedaccess_endpoint" "current" {
   endpoint_type            = var.type
   policy_document          = var.policy_document
   security_group_ids       = concat(aws_security_group.current[*].id, var.security_group_ids)
-  tags                     = merge(var.tags, { Name = var.name })
+  tags                     = merge(var.tags, { Name = format("%s-%s", var.name_prefix, var.name) })
   verified_access_group_id = var.group_id
 
   dynamic "load_balancer_options" {

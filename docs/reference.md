@@ -55,7 +55,7 @@ Default: `null`
 | `alarms.create_kms_key` | `bool` | `false` | Encrypt the created topic with a customer managed KMS key the module creates (<name_prefix>-<name>-alarms) |
 | `alarms.kms_key_arn` | `string` | `null` | Encrypt the created topic with an existing customer managed KMS key; its key policy must permit CloudWatch and EventBridge. Leave both unset for an unencrypted topic |
 | `alarms.email_addresses` | `list(string)` | `[]` | The email addresses subscribed to the topic; each recipient must confirm the subscription |
-| `alarms.pipeline_role_name` | `string` | `null` | The role the deployment pipeline assumes; when set, any other principal changing Verified Access raises an alarm (the changed-outside-pipeline rule) |
+| `alarms.pipeline_role_name` | `string` | `null` | The role the deployment pipeline assumes; when set, any other principal changing Verified Access raises an alarm (the changed-outside-pipeline rule). The rule is account wide (CloudTrail does not name the instance consistently), so with several deployments in one account use one pipeline role and enable the rule in one deployment only |
 | `alarms.additional_action_arns` | `list(string)` | `[]` | Additional ARNs notified on alarm and on recovery, e.g. an SNS topic subscribed by PagerDuty or AWS Chatbot |
 | `alarms.rules` | map of objects | optional | Per alarm settings, keyed by alarm: http-504, access-denied, logging-stopped, no-access-allowed, no-healthy-targets and unhealthy-targets (the last two apply to every endpoint with targets; key one endpoint as <endpoint>/no-healthy-targets to override it alone), and changed-outside-pipeline (enabled only). An alarm without a rule, or a setting left unset, keeps the module default (docs/operations.md, Alarms) |
 | `alarms.rules.<key>.enabled` | `bool` | `null` | Create the alarm; false turns it off. Unset means on, or for an <endpoint>/<alarm> key the setting of <alarm> |
@@ -75,9 +75,9 @@ Default: `null`
 
 ### `allowed_egress_cidr_blocks`
 
-The CIDR blocks endpoint security groups may send traffic to when the target range cannot be derived (load-balancer, network-interface and rds endpoints).
+The CIDR blocks endpoint security groups may send traffic to when the target range cannot be derived (load-balancer endpoints with their own load balancer, network-interface and rds endpoints); null (the default) uses the address ranges associated with var.vpc_id, which those targets must be in. Set it to narrow the range, or per endpoint with egress_cidr_blocks.
 
-Default: `["10.0.0.0/8"]`
+Default: `null`
 
 ### `certificate`
 
@@ -128,7 +128,7 @@ Default: `null`
 | --- | --- | --- | --- |
 | `dns.zone_id` | `string` | required | The id of the public hosted zone of the application domains, e.g. Z0123456789ABCDEFGHIJ |
 | `dns.create_validation_records` | `bool` | `true` | Publish the validation records of the module certificate |
-| `dns.create_application_records` | `bool` | `true` | Publish a CNAME from each http and https endpoint application_domain to its endpoint domain |
+| `dns.create_application_records` | `bool` | `true` | Publish a CNAME from each http and https endpoint application_domain inside the zone (below its apex) to its endpoint domain; domains outside the zone are skipped with a warning and left to the caller |
 | `dns.ttl` | `number` | `300` | The TTL in seconds of the records |
 
 ### `device_trust_provider`
@@ -180,7 +180,7 @@ Default: `{}`
 | --- | --- | --- | --- |
 | `groups.<key>.description` | `string` | `null` | The description of the group |
 | `groups.<key>.policy` | object | optional | The structured access policy (preferred), rendered to Cedar by the module |
-| `groups.<key>.policy.identity_groups` | `list(string)` | required | The identity groups permitted: Identity Center group ids, or OIDC group names |
+| `groups.<key>.policy.identity_groups` | `list(string)` | required | The identity groups permitted: Identity Center group ids, or OIDC group names (escaped in the Cedar strings) |
 | `groups.<key>.policy.owner` | `string` | required | The team accountable for this access |
 | `groups.<key>.policy.justification` | `string` | required | Why this access exists |
 | `groups.<key>.raw_policy` | object | optional | Escape hatch: a raw Cedar policy, e.g. file("policies/raw/<name>.cedar"); requires security review |
@@ -230,7 +230,7 @@ Default: `{}`
 | `groups.<key>.endpoints.<key>.egress_cidr_blocks` | `list(string)` | `null` | Override the CIDR blocks the endpoint security group may send to |
 | `groups.<key>.endpoints.<key>.policy` | object | optional | A structured endpoint policy, evaluated in addition to the group policy (both must allow): identity groups narrowing the group's audience and additional Cedar conditions, all combined with AND (and with the device condition when sensitive). The owner and justification default to the group's |
 | `groups.<key>.endpoints.<key>.policy.identity_groups` | `list(string)` | `[]` | The identity groups permitted to this endpoint (any of); empty leaves the group policy's audience |
-| `groups.<key>.endpoints.<key>.policy.additional_conditions` | `list(string)` | `[]` | Extra Cedar conditions, each one line, all of which must hold |
+| `groups.<key>.endpoints.<key>.policy.additional_conditions` | `list(string)` | `[]` | Extra Cedar conditions, all of which must hold: each one line, rendered in its own parentheses, so its brackets must balance outside string literals (at most ten deep), without ;, //, permit, forbid, when or unless |
 | `groups.<key>.endpoints.<key>.policy.owner` | `string` | `null` | The team accountable for this access, defaults to the group policy owner |
 | `groups.<key>.endpoints.<key>.policy.justification` | `string` | `null` | Why this access exists, defaults to the group policy justification |
 | `groups.<key>.endpoints.<key>.raw_policy` | object | optional | Escape hatch: a raw Cedar endpoint policy; requires security review |
@@ -355,7 +355,7 @@ Default: `null`
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
 | `waf.web_acl_arn` | `string` | `null` | The ARN of an existing regional web ACL to associate |
-| `waf.create` | `bool` | `false` | Create a regional web ACL (verified-access-<name>) with the AWS common, known bad inputs and IP reputation rule groups |
+| `waf.create` | `bool` | `false` | Create a regional web ACL (<name_prefix>-<name>) with the AWS common, known bad inputs and IP reputation rule groups |
 
 ## Outputs
 

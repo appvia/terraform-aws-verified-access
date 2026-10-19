@@ -25,8 +25,8 @@ flowchart LR
 | Every change is a pull request | Deployment repository; the pipeline role can only apply from `main` | Platform team |
 | Review is mandatory | `CODEOWNERS` plus branch protection on `main` (require code owner review, require the gate and plan checks, no bypass) | Code owners (the platform team) |
 | The effective policy is reviewed, not just the intent | `policies/*.cedar` must match what the module renders, or the gate fails | Reviewer |
-| Unsafe policies cannot be merged | Cedar lint rules L1 to L8 (parse, no unscoped permit, owner and justification, device context on sensitive endpoints, no forbid that is silently skipped) | The pipeline |
-| Changes outside the pipeline are detected | EventBridge rule on Verified Access write APIs by any principal other than the pipeline role, to the alarm topic (module `alarms.pipeline_role_name`, alarm [A7](operations.md#alarms)) | Platform team (alert recipients) |
+| Unsafe policies cannot be merged | Cedar lint rules L1 to L9 (parse, no unscoped permit, owner and justification, device context on sensitive endpoints, no forbid that is silently skipped, no permit ORed with `true`) | The pipeline |
+| Changes outside the pipeline are detected | EventBridge rule on Verified Access write APIs by any principal other than the pipeline role, to the alarm topic (module `alarms.pipeline_role_name`, alarm [A7](operations.md#alarms)); the rule covers the whole account and region, so use one pipeline role per account | Platform team (alert recipients) |
 
 > **Branch protection must be enabled** on the deployment repository's `main`. Without it, anyone with write access can push to `main` and the pipeline applies the change unreviewed.
 
@@ -82,10 +82,10 @@ Policies are declared as structured input (`groups[*].policy`: `identity_groups`
 
 | Layer | What it does | Where |
 | --- | --- | --- |
-| **Plan time validation** | Rejects malformed or over-broad input, for example an empty `identity_groups` (an unscoped permit, which would let anyone who can sign in through), Identity Center group names instead of ids, a missing owner or a justification under 10 characters, or an endpoint marked `sensitive` without a `device_trust_provider` | `variables.tf`, at `terraform plan` |
+| **Plan time validation** | Rejects malformed or over-broad input, for example an empty `identity_groups` (an unscoped permit, which would let anyone who can sign in through), Identity Center group names instead of ids, an endpoint condition that could close its parentheses (V83), a missing owner or a justification under 10 characters, or an endpoint marked `sensitive` without a `device_trust_provider` | `variables.tf`, at `terraform plan` |
 | **Sensitive endpoints** | Receive an endpoint policy requiring device posture; group and endpoint policies must both allow | Module, `sensitive = true` on an endpoint |
 | **Endpoint policies** | Narrow one endpoint within its group, rendered and linted like group policies ([endpoint policies](#endpoint-policies)) | Module, `policy` on an endpoint |
-| **Lint** | `scripts/cedar-lint.sh` checks rendered and raw policies against the rule set documented in the script (L1 to L8: parse with the official Cedar CLI, no unscoped permit, owner and justification, device context on sensitive endpoints, raw policies listed, protocol specific forbids guarded); `scripts/test-cedar-lint.sh` proves each rule | The Access Policy Gate in the deployment pipeline |
+| **Lint** | `scripts/cedar-lint.sh` checks rendered and raw policies against the rule set documented in the script (L1 to L9: parse with the official Cedar CLI, no unscoped permit, owner and justification, device context on sensitive endpoints, raw policies listed, protocol specific forbids guarded, no permit ORed with `true`); `scripts/test-cedar-lint.sh` proves each rule | The Access Policy Gate in the deployment pipeline |
 | **Golden files** | `tests/policy.tftest.hcl` asserts the rendered Cedar for each scenario against `tests/golden/*.cedar`, so a change in policy semantics is visible in the diff | This repository |
 | **Reviewed copy** | The deployment repository keeps a copy of every rendered policy in `policies/`; a test fails if they differ, so every access change shows its Cedar diff in the pull request | Deployment repository |
 | **Escape hatch** | `raw_policy` accepts hand written Cedar where the structured input cannot express a rule; keep raw policies in a dedicated directory protected by `CODEOWNERS` so they always receive a security review | Deployment repository |
@@ -107,7 +107,7 @@ A group policy decides who may reach any endpoint in the group. An endpoint can 
         }
 ```
 
-It renders to one `permit` whose conditions are all combined with **AND**: any of the endpoint's `identity_groups`, then each additional condition (each wrapped in parentheses, so an `||` inside one cannot widen the rest), then the device posture condition when the endpoint is `sensitive`. Verified Access evaluates the group policy and the endpoint policy and allows a request only if **both** allow it, so an endpoint policy can only narrow access, never widen it: a user must be in one of the group's identity groups **and** one of the endpoint's.
+It renders to one `permit` whose conditions are all combined with **AND**: any of the endpoint's `identity_groups`, then each additional condition wrapped in its own parentheses, then the device posture condition when the endpoint is `sensitive`. Verified Access evaluates the group policy and the endpoint policy and allows a request only if **both** allow it, so an endpoint policy can only narrow access, never widen it: a user must be in one of the group's identity groups **and** one of the endpoint's.
 
 ```cedar
 permit(principal, action, resource)
@@ -120,7 +120,16 @@ when {
 };
 ```
 
-Plan time checks: an endpoint sets at most one of `policy` and `raw_policy`; the policy must reference a trust provider (identity groups, `sensitive`, or a condition on the user or device context), as lint rule L2 requires; Identity Center groups are ids; and conditions are single expressions without semicolons or line breaks, so they cannot end the `permit` and start another statement. Anything the structured input cannot express still goes through `raw_policy`.
+Plan time checks: an endpoint sets at most one of `policy` and `raw_policy`; the policy must reference a trust provider (identity groups, `sensitive`, or a condition on the user or device context), as lint rule L2 requires; and Identity Center groups are ids.
+
+What the module guarantees about the rendered text, and what it does not:
+
+- **Identity groups cannot change the shape of the policy.** Each id or name is written into a Cedar string literal with backslashes and double quotes escaped, so an OIDC group named `x") || true || ["y` stays one string (`"x\") || true || [\"y"`) and `CORP\admins` stays `"CORP\\admins"` (`tests/golden/group-oidc-escaped.cedar`). Identity Center ids must match the IdentityStore group id pattern anyway.
+- **Header values cannot leave their `//` comment.** Group and endpoint names are kebab-case, and an owner or justification with a line feed or carriage return is rejected at plan time (and replaced with a space in the header as a second line of defence).
+- **An additional condition stays inside its parentheses.** Validation V83 removes the condition's string literals (honouring `\"` and `\\` escapes) and then requires its brackets, `()`, `[]` and `{}`, to balance without ever closing more than were opened, and rejects `;`, line breaks, `//` comments, unterminated strings and the keywords `permit`, `forbid`, `when` and `unless`. So `context.idc.user.email.address like "*") || (true` and `true) || (true) || (true` are rejected at plan time: neither can close the parentheses the module adds and OR in a condition of its own. Terraform has no loops, so brackets are matched by removing innermost pairs ten times: brackets may nest at most **ten deep** in one condition.
+- **What it does not guarantee:** that a condition is *meaningful*. A condition is Cedar you write, evaluated inside its parentheses and ANDed with the rest; `true`, or a test that always holds, narrows nothing. Nor does it check that the condition parses or refers to attributes that exist: AWS rejects a policy that does not parse when it is applied, and a condition on a missing attribute errors at request time, which denies. Review conditions like any other Cedar, and lint rule L9 flags a `permit` ORed with the literal `true`, the shape a break-out would take.
+
+Anything the structured input cannot express still goes through `raw_policy`.
 
 ## Identity
 
@@ -240,6 +249,6 @@ Here the user is in a permitted group but `email.verified` is `false`: with `req
 
 | Need | Where |
 | --- | --- |
-| Live investigation | CloudWatch Logs Insights, saved queries `verified-access/<name>/denied-requests` and `who-is-connecting` |
+| Live investigation | CloudWatch Logs Insights, saved queries `<name_prefix>/<name>/denied-requests` and `who-is-connecting` |
 | Long term record | S3 in the log archive account |
 | Who changed access | CloudTrail `ModifyVerifiedAccess*` events and the deployment repository's pull requests |

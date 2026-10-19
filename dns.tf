@@ -9,6 +9,24 @@ locals {
   application_endpoints = {
     for name, endpoint in local.endpoints : name => endpoint.application_domain if endpoint.protocol != "tcp" && endpoint.application_domain != null
   }
+  ## Indicates the module publishes application records, so it reads the hosted zone's name
+  enable_application_records = local.enable_dns && try(var.dns.create_application_records, false) && length(local.application_endpoints) > 0
+  ## The name of the hosted zone, lowercase and without the trailing dot
+  dns_zone_name = local.enable_application_records ? trimsuffix(lower(data.aws_route53_zone.current[0].name), ".") : ""
+  ## The application domains inside the hosted zone (below its apex, where a CNAME is allowed), which the module
+  ## publishes; the others are left to the caller (output application_domains), as Route 53 rejects a record outside
+  ## its zone
+  application_records = {
+    for name, domain in local.application_endpoints : name => domain
+    if local.enable_application_records && endswith(trimsuffix(lower(domain), "."), format(".%s", local.dns_zone_name))
+  }
+}
+
+## Find the hosted zone, whose name decides which application domains it can hold a record for
+data "aws_route53_zone" "current" {
+  count = local.enable_application_records ? 1 : 0
+
+  zone_id = var.dns.zone_id
 }
 
 ## Publish the certificate validation records in the hosted zone, keyed by the domains known at plan time
@@ -23,9 +41,9 @@ resource "aws_route53_record" "validation" {
   zone_id         = var.dns.zone_id
 }
 
-## Point each application domain at the endpoint domain Verified Access generated for it
+## Point each application domain in the hosted zone at the endpoint domain Verified Access generated for it
 resource "aws_route53_record" "application" {
-  for_each = local.enable_dns && try(var.dns.create_application_records, false) ? local.application_endpoints : {}
+  for_each = local.application_records
 
   name    = each.value
   records = [module.endpoints[each.key].endpoint_domain]

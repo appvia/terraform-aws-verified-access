@@ -14,12 +14,12 @@ Running Verified Access deployed with this module through a deployment repositor
 | --- | --- | --- |
 | **Is it up?** | NLB healthy targets per application; allowed access count; access log delivery (`IncomingLogEvents`) | NLB metrics, log derived metric, CloudWatch Logs metric |
 | **What is failing?** | Unhealthy targets; HTTP 504s (applications slower than the 60 second idle timeout) and 5xx; denial spikes | NLB metrics, log derived metrics |
-| **Who is connecting now?** | Allowed requests by user and endpoint, last seen | Saved Logs Insights query `verified-access/<name>/who-is-connecting` |
-| **What was denied?** | Denied requests with the user, target and reason | Saved Logs Insights query `verified-access/<name>/denied-requests`, `AccessDenied` metric |
+| **Who is connecting now?** | Allowed requests by user and endpoint, last seen | Saved Logs Insights query `<name_prefix>/<name>/who-is-connecting` |
+| **What was denied?** | Denied requests with the user, target and reason | Saved Logs Insights query `<name_prefix>/<name>/denied-requests`, `AccessDenied` metric |
 
 ### Log derived metrics
 
-Namespace `VerifiedAccess/<name>` (output `metric_namespace`), created when CloudWatch logging is enabled (`access_logs.cloudwatch`). All four are created by default; `access_logs.cloudwatch.metric_filters` chooses which (`null` all, `[]` none). The saved queries are separate (`access_logs.cloudwatch.create_queries`, default on). HTTP and TCP events have different shapes, so each metric has a filter per shape.
+Namespace `VerifiedAccess/<name_prefix>-<name>` (output `metric_namespace`; the resource name, so two deployments with the same `name` and different `name_prefix` in one account keep their metrics apart), created when CloudWatch logging is enabled (`access_logs.cloudwatch`). All four are created by default; `access_logs.cloudwatch.metric_filters` chooses which (`null` all, `[]` none). The saved queries are separate (`access_logs.cloudwatch.create_queries`, default on). HTTP and TCP events have different shapes, so each metric has a filter per shape.
 
 | Metric key | Metric | HTTP filter | TCP filter |
 | --- | --- | --- | --- |
@@ -52,10 +52,10 @@ Output `metrics` lists every metric the module makes available in a deployment, 
 
 | Key | Namespace | Metric | Dimensions | Source | What it tells you | Statistic |
 | --- | --- | --- | --- | --- | --- | --- |
-| `access-allowed` | `VerifiedAccess/<name>` | `AccessAllowed` | none | log metric filter | Requests and connections allowed; zero for a day means nobody can get in | Sum |
-| `access-denied` | `VerifiedAccess/<name>` | `AccessDenied` | none | log metric filter | Requests and connections denied; a spike is a bad policy change or probing | Sum |
-| `http-504` | `VerifiedAccess/<name>` | `Http504` | none | log metric filter | Applications slower than the 60 second Verified Access limit | Sum |
-| `http-5xx` | `VerifiedAccess/<name>` | `Http5xx` | none | log metric filter | Server errors from the applications or Verified Access | Sum |
+| `access-allowed` | `VerifiedAccess/<name_prefix>-<name>` | `AccessAllowed` | none | log metric filter | Requests and connections allowed; zero for a day means nobody can get in | Sum |
+| `access-denied` | `VerifiedAccess/<name_prefix>-<name>` | `AccessDenied` | none | log metric filter | Requests and connections denied; a spike is a bad policy change or probing | Sum |
+| `http-504` | `VerifiedAccess/<name_prefix>-<name>` | `Http504` | none | log metric filter | Applications slower than the 60 second Verified Access limit | Sum |
+| `http-5xx` | `VerifiedAccess/<name_prefix>-<name>` | `Http5xx` | none | log metric filter | Server errors from the applications or Verified Access | Sum |
 | `incoming-log-events` | `AWS/Logs` | `IncomingLogEvents` | `LogGroupName` | AWS/Logs | Access log events arriving; none means logging stopped or no usage | Sum |
 | `incoming-bytes` | `AWS/Logs` | `IncomingBytes` | `LogGroupName` | AWS/Logs | Access log volume, which drives the ingestion cost | Sum |
 | `load-balancer-active-flow-count` | `AWS/NetworkELB` | `ActiveFlowCount` | `LoadBalancer` | AWS/NetworkELB | Concurrent connections through the central NLB | Maximum |
@@ -82,10 +82,12 @@ Module option `alarms`, with starting thresholds. Every customer needs the same 
 | A4 | `access-denied` | `AccessDenied` (Sum) >= 20, period 300, 1 evaluation period | Warning | A bad policy change, or probing (proven in testing) | Run the `denied-requests` query: one user after a policy change means a policy fix; many sources means probing |
 | A5 | `logging-stopped` | `IncomingLogEvents` (Sum) < 1, period 3600, 1 evaluation period, missing data breaching | Warning | Audit trail broken, or no usage (check A6) | Check the instance logging configuration and the log group; in a quiet environment, turn it off or lengthen it |
 | A6 | `no-access-allowed` | `AccessAllowed` (Sum) < 1, period 3600, 24 evaluation periods, missing data breaching | Info | Nobody was allowed in for a day: a possible outage nobody reported | Try to connect; check the identity provider and the recent policy changes |
-| A7 | `changed-outside-pipeline` (only with `pipeline_role_name`) | EventBridge: any non read-only `*VerifiedAccess*` API call by a principal other than the pipeline role, or by an IAM user or the root user | Critical (security) | Someone bypassed the [approval gate](security.md#the-approval-gate) | Find the caller in CloudTrail; revert the change through the pipeline |
+| A7 | `changed-outside-pipeline` (only with `pipeline_role_name`) | EventBridge: any non read-only `*VerifiedAccess*` API call by a principal other than the pipeline role, or by an IAM user or the root user, **anywhere in the account and region** (see below) | Critical (security) | Someone bypassed the [approval gate](security.md#the-approval-gate) | Find the caller in CloudTrail; revert the change through the pipeline |
 | A8 | AWS Health event for Verified Access | EventBridge `aws.health` | Warning | | **Not built:** the Health event codes for Verified Access are not documented; add once confirmed |
 
 Tune after real usage: A5 and A6 fire in quiet environments (no traffic means no logs), which is expected in a demo.
+
+**A7 is account wide.** The rule cannot be scoped to this deployment's instance: the CloudTrail events of the Verified Access APIs do not carry the instance id consistently (a group policy change names only the group, an endpoint change only the endpoint, a trust provider change only the trust provider), so an event pattern on the instance id would miss most changes. The rule therefore matches every Verified Access change in the account and region. With several deployments of the module in one account, each one's rule alerts on changes to all of them, and a deployment whose pipeline role differs alerts on the other deployments' own pipeline. Use one pipeline role per account for all of them, and turn the rule on in one deployment only (`alarms.rules = { changed-outside-pipeline = { enabled = false } }` in the others).
 
 ### Customising the alarms
 
@@ -147,7 +149,7 @@ Module option `dashboard`. `dashboard = {}` creates the CloudWatch dashboard `<n
 
 | Signal | Route |
 | --- | --- |
-| Log derived and NLB metrics | **Module option `metric_stream`**: a CloudWatch metric stream (`<name_prefix>-<name>`, OpenTelemetry 1.0 by default; `json` and `opentelemetry0.7` also accepted) to a Firehose delivery stream you provide (`firehose_arn`, with the `role_arn` CloudWatch assumes to write to it, or `create_role = true`), for example one delivering to Dash0. By default it streams `VerifiedAccess/<name>` and, with `topology = "hub"`, `AWS/NetworkELB`; `metric_stream.include` streams only the chosen keys of the `metrics` output |
+| Log derived and NLB metrics | **Module option `metric_stream`**: a CloudWatch metric stream (`<name_prefix>-<name>`, OpenTelemetry 1.0 by default; `json` and `opentelemetry0.7` also accepted) to a Firehose delivery stream you provide (`firehose_arn`, with the `role_arn` CloudWatch assumes to write to it, or `create_role = true`), for example one delivering to Dash0. By default it streams `VerifiedAccess/<name_prefix>-<name>` and, with `topology = "hub"`, `AWS/NetworkELB`; `metric_stream.include` streams only the chosen keys of the `metrics` output |
 | Raw access logs | `access_logs.firehose` to a Firehose stream (`delivery_stream_name` of yours, or `create = true` for one writing to S3), or a CloudWatch Logs subscription filter (outside the module), to Dash0 (or Dash0's own AWS integration if already in place) |
 | Stays in AWS only | The S3 archive (retention, immutability), the security alarm A7 (owned by security), Logs Insights queries |
 
@@ -208,6 +210,27 @@ Revoking access is the same change in reverse, with the same delay.
 ### Publish the certificate validation records
 
 With `dns` (a Route 53 public hosted zone), the module publishes them, and with `wait_for_validation` waits for them; nothing to do by hand. Otherwise, with the module `certificate`, read the `certificate_validation_records` output after the first apply and create each record (name => value, type CNAME) in the domain's DNS. The certificate is issued a few minutes later. With `certificate.wait_for_validation = true` the apply waits for issue before creating the endpoints that use it, so publish the records first (or apply once without waiting).
+
+### Changes that recreate resources
+
+Most changes are made in place, but some arguments cannot be changed on an existing AWS resource, so Terraform replaces the resource, and a replaced resource replaces whatever must point at it. Read the plan for `must be replaced` before merging. Replacing an **endpoint** gives it a new endpoint domain: application CNAMEs must be repointed (the module does it with `dns`), TCP users connect to the new name (output `endpoint_domains`), and the new endpoint takes about 17 minutes to become active, during which the application is unreachable. Replacing the **instance** or the **user trust provider** also means re-exporting the Connectivity Client configuration ([connect over TCP](#connect-over-tcp-ssh-rdp-databases)). Checked against the `ForceNew` arguments of AWS provider v6.68.0 (`internal/service/ec2/verifiedaccess_*.go`, `internal/service/elbv2`); rows marked *unverified* follow from the provider schema but have not been applied against AWS.
+
+| Change | Replaced | Not replaced (updated in place) |
+| --- | --- | --- |
+| `name_prefix` or `name` | The central NLB (its name), and with it every listener and every endpoint with `targets`; every target group (name hash; created before destroyed); every module endpoint security group (name and description), and so every endpoint using one; the load balancer security group; renamed logging and monitoring resources (log group, metric filters, queries, alarms, dashboard, topic, keys' aliases, metric stream, web ACL) | The instance, trust providers and groups (only their `Name` tags change) |
+| `load_balancer.private_ips`, or removing a subnet from `subnet_ids` with `topology = "hub"` | The central NLB, every listener and every endpoint with `targets` | Target groups and their targets; adding a subnet updates the NLB in place |
+| An endpoint's `create_security_group`, or `security_group_ids` | The endpoint (its security groups cannot change) | |
+| `load_balancer.create_security_group`, `load_balancer.security_group_ids` | The load balancer security group is created or destroyed | The NLB (its security groups change in place, as it always keeps at least one) |
+| An endpoint's `endpoint_domain_prefix`, `application_domain`, `domain_certificate_arn` (or the module `certificate`, which is replaced when its `domain_name` changes), `type`, `cidr`, `load_balancer_arn`, `network_interface_id`, `rds` ARNs, or `subnet_ids` of a cidr or rds endpoint | The endpoint | |
+| An endpoint's `port`, `port_ranges` or `protocol` | With `targets`: its target group (a new name, created before the old one is destroyed) and the target registrations. The listener moves to the new target group once the targets are registered in it; the old registrations are removed first, so expect a short interruption until the targets pass their first health checks | The endpoint and its listener; the security group rules |
+| An endpoint's `targets` or `target_details` | The registrations of the changed targets | The target group, listener and endpoint |
+| Moving an endpoint to another group (same endpoint name) | | The endpoint (its group changes in place) |
+| Renaming an endpoint or a group (its map key) | The renamed endpoint, or the group and every endpoint in it, unless a `moved` block maps the old key to the new one | |
+| `vpc_id` | Every security group and target group, and so every endpoint | |
+| `fips_enabled` | The instance and the trust provider attachments; the groups are moved to the new instance in place. *Unverified:* AWS may refuse to delete the old instance while groups are attached, so plan this as a migration | Groups, endpoints |
+| `user_trust_provider.type` or `policy_reference_name`, or the OIDC `issuer`, endpoints, `client_id` or `public_signing_key_endpoint` | The user trust provider and its attachment (a new `policy_reference_name` also re-renders every policy) | The instance, groups and endpoints; the OIDC client secrets change in place |
+| `device_trust_provider.type` or `tenant_id` | The device trust provider and its attachment | |
+| `kms_key_arn`, `create_kms_key`, `description`, policies, tags | | Everything (in place) |
 
 ### Tear down
 

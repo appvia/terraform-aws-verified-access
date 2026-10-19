@@ -2,6 +2,13 @@
 ## balancer, one http with its own domain and certificate, access logs to CloudWatch with trust context, email alarms
 ## with the pipeline role and a dashboard) keeps creating the same alarms, metric filters, queries, dashboard, topic
 ## and pipeline rule, with the same thresholds, as the interface is refined.
+##
+## Deliberate changes for this caller, each an in-place update or a replacement that keeps the endpoints:
+## - the log derived metrics moved from VerifiedAccess/<name> to VerifiedAccess/<name_prefix>-<name> (metric filters,
+##   three alarms and the dashboard updated in place; history stays under the old namespace)
+## - target group names hash the VPC and target port too, so both target groups are replaced (created before
+##   destroyed), their target registrations replaced, and the listeners and load balancer alarms updated in place
+## - the instance, trust provider, group and endpoint Name tags became <name_prefix>-<name>[-...] (tags only)
 
 mock_provider "aws" {
   mock_resource "aws_sns_topic" {
@@ -113,10 +120,10 @@ run "same_monitoring_resources" {
         alarm.evaluation_periods, alarm.treat_missing_data, alarm.alarm_name,
       ]
       } == {
-      "http-504"                   = ["VerifiedAccess/hub", "Http504", "Sum", "GreaterThanOrEqualToThreshold", 5, 300, 1, "notBreaching", "verified-access-hub-http-504"]
-      "access-denied"              = ["VerifiedAccess/hub", "AccessDenied", "Sum", "GreaterThanOrEqualToThreshold", 20, 300, 1, "notBreaching", "verified-access-hub-access-denied"]
+      "http-504"                   = ["VerifiedAccess/verified-access-hub", "Http504", "Sum", "GreaterThanOrEqualToThreshold", 5, 300, 1, "notBreaching", "verified-access-hub-http-504"]
+      "access-denied"              = ["VerifiedAccess/verified-access-hub", "AccessDenied", "Sum", "GreaterThanOrEqualToThreshold", 20, 300, 1, "notBreaching", "verified-access-hub-access-denied"]
       "logging-stopped"            = ["AWS/Logs", "IncomingLogEvents", "Sum", "LessThanThreshold", 1, 3600, 1, "breaching", "verified-access-hub-logging-stopped"]
-      "no-access-allowed"          = ["VerifiedAccess/hub", "AccessAllowed", "Sum", "LessThanThreshold", 1, 3600, 24, "breaching", "verified-access-hub-no-access-allowed"]
+      "no-access-allowed"          = ["VerifiedAccess/verified-access-hub", "AccessAllowed", "Sum", "LessThanThreshold", 1, 3600, 24, "breaching", "verified-access-hub-no-access-allowed"]
       "app-ssh-no-healthy-targets" = ["AWS/NetworkELB", "HealthyHostCount", "Minimum", "LessThanThreshold", 1, 60, 2, "breaching", "verified-access-hub-app-ssh-no-healthy-targets"]
       "app-ssh-unhealthy-targets"  = ["AWS/NetworkELB", "UnHealthyHostCount", "Maximum", "GreaterThanThreshold", 0, 60, 5, "notBreaching", "verified-access-hub-app-ssh-unhealthy-targets"]
       "app-web-no-healthy-targets" = ["AWS/NetworkELB", "HealthyHostCount", "Minimum", "LessThanThreshold", 1, 60, 2, "breaching", "verified-access-hub-app-web-no-healthy-targets"]
@@ -151,6 +158,29 @@ run "same_monitoring_resources" {
   }
 
   assert {
+    condition = alltrue([
+      aws_lb_target_group.current["app-ssh"].name == format("verified-access-%s", substr(sha1("hub/app-ssh/vpc-0123456789abcdef0/22"), 0, 16)),
+      aws_lb_target_group.current["app-web"].name == format("verified-access-%s", substr(sha1("hub/app-web/vpc-0123456789abcdef0/80"), 0, 16)),
+      aws_lb_listener.current["app-ssh"].port == 22,
+      aws_lb_listener.current["app-web"].port == 80,
+    ])
+    error_message = "The target groups should be named by the hash of name/endpoint/VPC/target port, behind the same listeners"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_verifiedaccess_instance.current[0].tags["Name"] == "verified-access-hub",
+      aws_verifiedaccess_trust_provider.user[0].tags["Name"] == "verified-access-hub-user",
+    ])
+    error_message = "The instance and trust provider should be tagged <name_prefix>-<name>"
+  }
+
+  assert {
+    condition     = length(data.aws_vpc.current) == 0 && length(data.aws_route53_zone.current) == 0
+    error_message = "Endpoints with targets send only to the module subnets, so the VPC is not read; without dns no zone is read"
+  }
+
+  assert {
     condition     = length(aws_sns_topic.alarms) == 1 && length(aws_sns_topic_policy.alarms) == 1 && length(aws_kms_key.alarms) == 0
     error_message = "The module should still create the unencrypted alarm topic"
   }
@@ -173,7 +203,7 @@ run "same_monitoring_resources" {
   assert {
     condition = toset([for key, metric in output.metrics : key if metric.source == "log metric filter"]) == toset([
       "access-allowed", "access-denied", "http-504", "http-5xx",
-    ]) && output.metric_namespace == "VerifiedAccess/hub"
+    ]) && output.metric_namespace == "VerifiedAccess/verified-access-hub"
     error_message = "All four log derived metrics should be available in the same namespace"
   }
 

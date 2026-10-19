@@ -272,7 +272,10 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
 }
 
 ## Alarm when Verified Access is changed by anyone other than the pipeline role, protecting the approval gate. IAM
-## users and the root user have no session issuer, so they are matched by identity type
+## users and the root user have no session issuer, so they are matched by identity type. The rule is account wide: the
+## CloudTrail events of the Verified Access APIs do not name the instance consistently (a group policy change names
+## only the group, an endpoint change only the endpoint), so it cannot be scoped to this instance. With several
+## deployments in one account, use one pipeline role and turn the rule on in one of them (docs/operations.md, Alarms)
 resource "aws_cloudwatch_event_rule" "changed_outside_pipeline" {
   count = local.enable_change_alarm ? 1 : 0
 

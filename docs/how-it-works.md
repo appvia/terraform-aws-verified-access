@@ -358,7 +358,6 @@ Requests that come up but that Verified Access (or the AWS API and provider) can
 - **Private CA certificates** for application domains: the `domain_certificate_arn` must be a public ACM certificate.
 - **More than one user trust provider per instance**: one identity provider per instance; a second directory needs a second instance (a second deployment of the module).
 - **The Connectivity Client configuration as a Terraform resource**: it is only exported with `aws ec2 export-verified-access-instance-client-configuration` (output `client_configuration_command`).
-- **Several regions in one module call**: an instance is regional; call the module once per region with a provider for each.
 - **Instance ID targets on the NLB across a transit gateway**: targets in another VPC must be IP targets (availability zone `all`).
 - **Keeping the OIDC client secret out of Terraform state**: the trust provider takes the secret as an argument, so it is stored in state; encrypt and restrict the state.
 
@@ -378,6 +377,8 @@ Not built yet, in no particular order. Ask if one matters to you:
 - Metric stream filters by metric name.
 - A module built ALB for HTTP applications.
 - Configurable resource timeouts.
+- A `region` input using the AWS provider v6 per-resource `region` argument, so one provider can deploy to several regions. Today an instance is regional: call the module once per region, each with a provider for that region.
+- More examples: OIDC with Okta and CrowdStrike, an RDS or Aurora endpoint, team-based groups.
 
 ### Not yet proven
 

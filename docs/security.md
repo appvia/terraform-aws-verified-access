@@ -134,6 +134,56 @@ Plan time checks: an endpoint sets at most one of `policy` and `raw_policy`; the
 
 The supported providers are listed in [trust providers](how-it-works.md#trust-providers).
 
+## Identity passed to applications
+
+After a user is allowed, Verified Access adds the header **`x-amzn-ava-user-context`** to every request it forwards to a **web (HTTP) endpoint**. TCP endpoints get no header (there is no HTTP request to carry it). The header is a JSON Web Token (JWT), signed by AWS, so the application can trust who the user is without its own sign-in ([AWS: user claims passing](https://docs.aws.amazon.com/verified-access/latest/ug/user-claims-passing.html)).
+
+| | Identity Center | OIDC |
+| --- | --- | --- |
+| Signed claims (payload) | `user.user_id`, `user.user_name`, `user.email.address`, `user.email.verified`; **no groups** | The provider's claims: `sub`, `email`, `email_verified`, `groups`, and `additional_user_context` |
+| JWT header `iss` | The trust provider ARN | The OIDC issuer URL |
+| Best user identifier | `user.user_id` | `sub` |
+
+The JWT header carries `alg` (`ES384`), `kid` (the signing key id), `signer` (the Verified Access instance ARN) and `exp` (120 seconds). To trust it, an application must, **before using any claim**:
+
+1. **Check the signer:** the `signer` in the JWT header equals your instance ARN (module output `instance_arn`). Without this, a token from any other Verified Access instance would be accepted.
+2. **Fetch the public key** for the `kid`: `https://public-keys.prod.verified-access.<region>.amazonaws.com/<kid>`, and cache it by `kid`.
+3. **Verify the signature** with algorithm `ES384` only, and reject expired tokens.
+
+Things to know:
+
+- **The claims are signed, not encrypted.** Use HTTPS between the load balancer and the application where possible; with plain HTTP, make sure only the Verified Access path can reach the application (with `topology = "hub"` the tenant security group allows only the endpoint subnets).
+- **Applications without internet access** cannot reach the public key URL. Fetch the keys on a schedule into the VPC (for example to S3 or Parameter Store) and have the application read them there; AWS publishes a sample of this pattern (`aws-samples/sample-verified-access-jwt-private-distribution`).
+- **Use claims for who, not for access.** The access decision is the Cedar policy; use the claims to personalise or audit inside the application. With Identity Center, group membership is not in the claims.
+
+## Pipeline role permissions
+
+The role the deployment pipeline assumes needs `ReadOnlyAccess` (plans read everything) plus the statements below for the default options. Resources are scoped by the `name_prefix` (default `verified-access`): every load balancer, target group, alarm, dashboard, EventBridge rule and SNS topic the module creates is named `<name_prefix>-*`, and every security group carries the tag `Name=<name_prefix>-*`. This is the set a working deployment uses, with IAM Access Analyzer reporting no findings.
+
+| Statement | Actions | Resources |
+| --- | --- | --- |
+| Verified Access | `ec2:*VerifiedAccess*`, `verified-access:*` | `*` |
+| Verified Access tags | `ec2:CreateTags`, `ec2:DeleteTags` | `arn:aws:ec2:*:*:verified-access-*` |
+| Service linked role | `iam:CreateServiceLinkedRole`, condition `iam:AWSServiceName = verified-access.amazonaws.com` | `arn:aws:iam::*:role/aws-service-role/verified-access.amazonaws.com/*` |
+| Identity Center application (Identity Center trust providers only) | `sso:CreateManagedApplicationInstance`, `sso:DeleteManagedApplicationInstance`, `sso:GetSharedSsoConfiguration`, `sso:PutApplicationAccessScope`, `sso:DeleteApplicationAccessScope`, `sso:PutApplicationAuthenticationMethod`, `sso:DeleteApplicationAuthenticationMethod`, `sso:PutApplicationGrant`, `sso:DeleteApplicationGrant`, `sso:PutApplicationAssignmentConfiguration` (needed to create endpoints, missing from AWS's documented permissions) | `*` |
+| Security groups | `ec2:CreateSecurityGroup`; `ec2:CreateTags` with condition `ec2:CreateAction` in `CreateSecurityGroup` and the `CreateVerifiedAccess*` actions; `ec2:AuthorizeSecurityGroup*`, `ec2:RevokeSecurityGroup*`, `ec2:ModifySecurityGroupRules`, `ec2:UpdateSecurityGroupRuleDescriptions*`, `ec2:DeleteSecurityGroup`, `ec2:CreateTags`, `ec2:DeleteTags`, with condition `aws:ResourceTag/Name` like `<name_prefix>-*` | `*`; `arn:aws:ec2:*:*:security-group/*` |
+| Access logs | `logs:*` (log group, metric filters, saved queries, log delivery) | `*` (narrow to `/aws/<name_prefix>/*` and the log delivery actions if required) |
+| Access log bucket (S3 destination only) | `s3:*` | `arn:aws:s3:::*verified-access*` |
+| Central load balancer (`hub`) | `elasticloadbalancing:*` | `arn:aws:elasticloadbalancing:*:*:` followed by `loadbalancer/net/<name_prefix>-*`, `listener/net/<name_prefix>-*`, `listener-rule/net/<name_prefix>-*` and `targetgroup/<name_prefix>-*` |
+| Alarms and dashboard | `cloudwatch:*`, `events:*`, `sns:*` | `arn:aws:cloudwatch:*:*:alarm:<name_prefix>-*`, `arn:aws:cloudwatch::*:dashboard/<name_prefix>-*`, `arn:aws:events:*:*:rule/<name_prefix>-*`, `arn:aws:sns:*:*:<name_prefix>-*` |
+| Certificate (`certificate`) | `acm:RequestCertificate` with condition `acm:ValidationMethod = DNS`; `acm:AddTagsToCertificate` | `*`; `arn:aws:acm:*:*:certificate/*` |
+
+Options that need more, only when turned on:
+
+| Option | Extra permissions |
+| --- | --- |
+| `certificate` destroy | `acm:DeleteCertificate` (or remove the certificate from state with a `removed` block before destroying, see [operations](operations.md)) |
+| `waf` | `wafv2:CreateWebACL`, `GetWebACL`, `UpdateWebACL`, `DeleteWebACL`, `ListTagsForResource`, `TagResource`, `AssociateWebACL`, `DisassociateWebACL`, `GetWebACLForResource` |
+| `alarms.create_kms_key` (or any `kms_key_arn`) | `kms:CreateKey`, `kms:PutKeyPolicy`, `kms:EnableKeyRotation`, `kms:CreateAlias`, `kms:DeleteAlias`, `kms:ScheduleKeyDeletion`, `kms:TagResource`; with a supplied key, `kms:DescribeKey`, `kms:GenerateDataKey*` and `kms:Decrypt` on it |
+| `metric_stream` | `cloudwatch:PutMetricStream`, `GetMetricStream`, `DeleteMetricStream`, and `iam:PassRole` on the metric stream role |
+| `dns` | `route53:ChangeResourceRecordSets`, `GetChange`, `GetHostedZone`, `ListResourceRecordSets` on the zone |
+| Client configuration export (a manual workflow) | `ec2:ExportVerifiedAccessInstanceClientConfiguration` (already in `ec2:*VerifiedAccess*`) |
+
 ## Logging
 
 Verified Access logs every access attempt, allowed or denied, in Open Cybersecurity Schema Framework (OCSF) format, to CloudWatch Logs, S3 or Firehose ([ADR 0004](adr/0004-logging-destinations-and-format.md)).

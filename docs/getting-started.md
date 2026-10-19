@@ -57,7 +57,7 @@ You do not run Terraform from your laptop. Create a **deployment repository** fr
 - On a **pull request** it runs the policy gate and a **plan** (a dry run that lists what would change) with a read-only role.
 - On **merge to `main`** it runs **apply** (makes the changes) with a read-write role.
 
-The pipeline signs in to AWS with **OIDC**: GitHub proves to AWS which repository and branch is asking, and AWS lets it assume an IAM role, so no long-lived keys are stored. You need that **pipeline role** in the network account, trusting your deployment repository. Note its name (for example `verified-access-pipeline`). Besides the usual permissions, it needs `sso:PutApplicationAssignmentConfiguration` (missing from AWS's documented permissions) to create endpoints, and `ec2:ExportVerifiedAccessInstanceClientConfiguration` to export the client configuration.
+The pipeline signs in to AWS with **OIDC**: GitHub proves to AWS which repository and branch is asking, and AWS lets it assume an IAM role, so no long-lived keys are stored. You need that **pipeline role** in the network account, trusting your deployment repository. Note its name (for example `verified-access-pipeline`). The exact permissions it needs, and the extra ones each option adds, are listed in [pipeline role permissions](security.md#pipeline-role-permissions). Note `sso:PutApplicationAssignmentConfiguration`, which endpoints need but AWS's documented permissions miss.
 
 Protect `main` with branch protection (code owner review required, gate and plan checks required, no bypass). The [approval gate](security.md#the-approval-gate) depends on it.
 

@@ -314,7 +314,7 @@ Default quotas per account and region (all adjustable): 5 instances, 10 groups, 
 
 ## Limitations
 
-What to know before choosing Verified Access, and what the design around it implies. Workarounds are noted where they exist.
+What to know before choosing Verified Access, and what the design around it implies. Workarounds are noted where they exist. Limitations of the policy language (one policy document per group and endpoint, no schema validation, context per provider and protocol) are in [access policies](policies.md#limitations-and-gotchas).
 
 ### Verified Access itself
 

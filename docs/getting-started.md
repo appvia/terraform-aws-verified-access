@@ -14,7 +14,7 @@ This repository is a **Terraform module**. Terraform is a tool that reads files 
 | --- | --- |
 | A Verified Access instance | The front door itself, one per environment |
 | A trust provider | The link to your identity provider (IAM Identity Center or another OIDC provider) |
-| Groups and access policies | Who may reach what. You list identity groups; the module writes the policy in [Cedar](https://www.cedarpolicy.com/), AWS's policy language |
+| Groups and access policies | Who may reach what. You list identity groups; the module writes the policy in [Cedar](https://www.cedarpolicy.com/), AWS's policy language ([access policies](policies.md) explains it, with examples) |
 | Endpoints | One per application: the address users connect to |
 | A central network load balancer (optional) | Reaches applications in other VPCs across a transit gateway |
 | Access logs | Every attempt, with the user and their groups, in CloudWatch Logs (and optionally S3 or Firehose) |
@@ -348,7 +348,7 @@ Add or remove an Identity Center group ID in `identity_groups`, in `values/produ
       ]
 ```
 
-To give one person access, add them to an existing group in IAM Identity Center instead: no pull request needed. Removing access is the same change in reverse, with the same delay of about 10 minutes, and new connections are denied after that (whether an active session is ended is untested). For a new audience, add a new entry under `groups` with its own `policy` and `endpoints`: groups are per audience (for example support), not per tenant. A worked example of the policy diff is in [security](security.md#a-worked-example).
+To give one person access, add them to an existing group in IAM Identity Center instead: no pull request needed. Removing access is the same change in reverse, with the same delay of about 10 minutes, and new connections are denied after that (whether an active session is ended is untested). For a new audience, add a new entry under `groups` with its own `policy` and `endpoints`: groups are per audience (for example support), not per tenant. A worked example of the policy diff is in [security](security.md#a-worked-example); narrowing one endpoint, device posture, read-only and break-glass access are in the [policy cookbook](policies.md#cookbook).
 
 ### Add an application
 

@@ -7,6 +7,6 @@
 // user-context: idc
 // device-context: crowdstrike
 forbid(principal, action, resource)
-when {
-  context.http_request.http_method != "GET"
+unless {
+  context has "http_request" && context.http_request.http_method == "GET"
 };

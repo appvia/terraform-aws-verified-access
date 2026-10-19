@@ -25,7 +25,7 @@ flowchart LR
 | Every change is a pull request | Deployment repository; the pipeline role can only apply from `main` | Platform team |
 | Review is mandatory | `CODEOWNERS` plus branch protection on `main` (require code owner review, require the gate and plan checks, no bypass) | Code owners (the platform team) |
 | The effective policy is reviewed, not just the intent | `policies/*.cedar` must match what the module renders, or the gate fails | Reviewer |
-| Unsafe policies cannot be merged | Cedar lint rules L1 to L7 (parse, no unscoped permit, owner and justification, device context on sensitive endpoints) | The pipeline |
+| Unsafe policies cannot be merged | Cedar lint rules L1 to L8 (parse, no unscoped permit, owner and justification, device context on sensitive endpoints, no forbid that is silently skipped) | The pipeline |
 | Changes outside the pipeline are detected | EventBridge rule on Verified Access write APIs by any principal other than the pipeline role, to the alarm topic (module `alarms.pipeline_role_name`, alarm [A7](operations.md#alarms)) | Platform team (alert recipients) |
 
 > **Branch protection must be enabled** on the deployment repository's `main`. Without it, anyone with write access can push to `main` and the pipeline applies the change unreviewed.
@@ -78,14 +78,14 @@ A service control policy denying `ec2:CreateVerifiedAccessEndpoint` and `ec2:Mod
 
 ## How policies are rendered and checked
 
-Policies are declared as structured input (`groups[*].policy`: `identity_groups`, `owner`, `justification`) and rendered to [Cedar](https://www.cedarpolicy.com/) by the module, with deterministic output and a machine readable header. Reviewers read the input and the `rendered_policies` output, not hand written Cedar ([ADR 0005](adr/0005-policies-reviewed-as-rendered-cedar.md)). Each access change touches two files, the intent and the effect: intended friction.
+Policies are declared as structured input (`groups[*].policy`: `identity_groups`, `owner`, `justification`) and rendered to [Cedar](https://www.cedarpolicy.com/) by the module, with deterministic output and a machine readable header. New to Cedar? [Access policies](policies.md) explains it, with worked examples. Reviewers read the input and the `rendered_policies` output, not hand written Cedar ([ADR 0005](adr/0005-policies-reviewed-as-rendered-cedar.md)). Each access change touches two files, the intent and the effect: intended friction.
 
 | Layer | What it does | Where |
 | --- | --- | --- |
 | **Plan time validation** | Rejects malformed or over-broad input, for example an empty `identity_groups` (an unscoped permit, which would let anyone who can sign in through), Identity Center group names instead of ids, a missing owner or a justification under 10 characters, or an endpoint marked `sensitive` without a `device_trust_provider` | `variables.tf`, at `terraform plan` |
 | **Sensitive endpoints** | Receive an endpoint policy requiring device posture; group and endpoint policies must both allow | Module, `sensitive = true` on an endpoint |
 | **Endpoint policies** | Narrow one endpoint within its group, rendered and linted like group policies ([endpoint policies](#endpoint-policies)) | Module, `policy` on an endpoint |
-| **Lint** | `scripts/cedar-lint.sh` checks rendered and raw policies against the rule set documented in the script (L1 to L7: parse with the official Cedar CLI, no unscoped permit, owner and justification, device context on sensitive endpoints, raw policies listed); `scripts/test-cedar-lint.sh` proves each rule | The Access Policy Gate in the deployment pipeline |
+| **Lint** | `scripts/cedar-lint.sh` checks rendered and raw policies against the rule set documented in the script (L1 to L8: parse with the official Cedar CLI, no unscoped permit, owner and justification, device context on sensitive endpoints, raw policies listed, protocol specific forbids guarded); `scripts/test-cedar-lint.sh` proves each rule | The Access Policy Gate in the deployment pipeline |
 | **Golden files** | `tests/policy.tftest.hcl` asserts the rendered Cedar for each scenario against `tests/golden/*.cedar`, so a change in policy semantics is visible in the diff | This repository |
 | **Reviewed copy** | The deployment repository keeps a copy of every rendered policy in `policies/`; a test fails if they differ, so every access change shows its Cedar diff in the pull request | Deployment repository |
 | **Escape hatch** | `raw_policy` accepts hand written Cedar where the structured input cannot express a rule; keep raw policies in a dedicated directory protected by `CODEOWNERS` so they always receive a security review | Deployment repository |

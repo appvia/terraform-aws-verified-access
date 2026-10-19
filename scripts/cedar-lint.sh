@@ -23,6 +23,8 @@
 ##   L5  the header declares managed-by: terraform-aws-verified-access
 ##   L6  raw (escape hatch) policies are listed so reviewers always see them (informational)
 ##   L7  the policy contains at least one permit (a forbid-only policy denies everything)
+##   L8  a forbid using protocol specific context (http_request, tcp_flow) guards it with context has; otherwise
+##       it errors on the other protocol and Cedar skips it, so the forbid silently does not apply
 ##
 ## Usage: scripts/cedar-lint.sh [--require-parser] <file-or-directory>...
 #
@@ -123,7 +125,12 @@ lint_file() {
             print "ERROR L2 unscoped permit: a group permit must reference context." user "."
           else if (kind == "endpoint" && !has_user && !has_device)
             print "ERROR L2 unscoped permit: an endpoint permit must reference a trust provider context"
-        } else if (statement !~ /^forbid[ \t]*\(/) {
+        } else if (statement ~ /^forbid[ \t]*\(/) {
+          if (index(statement, "context.http_request") > 0 && index(statement, "context has \"http_request\"") == 0)
+            print "ERROR L8 unguarded forbid: add context has \"http_request\", or the forbid is skipped on TCP endpoints"
+          if (index(statement, "context.tcp_flow") > 0 && index(statement, "context has \"tcp_flow\"") == 0)
+            print "ERROR L8 unguarded forbid: add context has \"tcp_flow\", or the forbid is skipped on HTTP endpoints"
+        } else {
           print "ERROR L1 unrecognised statement, expected permit or forbid"
         }
       }

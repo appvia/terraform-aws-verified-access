@@ -63,6 +63,41 @@ Start from what the customer spends today and ask what the same money buys:
 
 For the example $2,000 a month, the same budget covers about **13 TCP applications** or **10 web applications** ((2,000 - 20) / 146 and / 197), for any number of users. If the jump boxes front fewer applications than that, Verified Access costs less; if more, it costs more on infrastructure alone.
 
+### Worked example: a small team (assumed numbers)
+
+Customers rarely know their application count up front, so start from a stated assumption and adjust it once the inventory is done. Illustrative numbers:
+
+| Assumption | Value |
+| --- | --- |
+| Hosted desktops used as jump boxes (RDP and SSH to servers, internal websites) | **$1,800 a month** |
+| Users | 6 (about $300 each) |
+| Servers reached over RDP or SSH | **3** |
+| Internal websites | **2** |
+
+With `topology = "hub"`, each server is its own endpoint behind the central load balancer:
+
+| Item | Per month |
+| --- | --- |
+| 3 servers x $146 | $438 |
+| 2 websites x $197 | $394 |
+| Central load balancer | $20 |
+| Logs, alarms, dashboard | about $10 |
+| **Verified Access** | **about $862** |
+| Jump boxes today | $1,800 |
+| **Difference** | **about $940 a month less** |
+
+How the result moves when the assumption is wrong:
+
+| Servers + websites | Verified Access per month | Against $1,800 |
+| --- | --- | --- |
+| 1 + 1 | $373 | about $1,430 less |
+| 3 + 2 (the assumption) | $862 | about $940 less |
+| 5 + 3 | $1,351 | about $450 less |
+| 6 + 4 | $1,694 | about the same |
+| 8 + 5 | $2,183 | about $380 more |
+
+The break-even is `146 x servers + 197 x websites` of about **$1,770** (the spend less the shared $30): up to about 12 servers, 8 websites, or a mix such as 6 and 4. The number of users does not change the Verified Access side; more users only make the jump boxes dearer.
+
 ### What the model leaves out
 
 - **Operating effort** on both sides: desktop images, patching and licensing for jump boxes; pull request changes and the Connectivity Client rollout for Verified Access. Add the customer's own figures when known.

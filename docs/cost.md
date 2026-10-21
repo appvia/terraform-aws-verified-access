@@ -65,14 +65,14 @@ For the example $2,000 a month, the same budget covers about **13 TCP applicatio
 
 ### Worked example: a small team (assumed numbers)
 
-Customers rarely know their application count up front, so start from a stated assumption and adjust it once the inventory is done. Illustrative numbers:
+Customers rarely know their application count up front, so start from a stated assumption and adjust it once the inventory is done. Illustrative numbers for a typical small team:
 
 | Assumption | Value |
 | --- | --- |
-| Hosted desktops used as jump boxes (RDP and SSH to servers, internal websites) | **$1,800 a month** |
-| Users | 6 (about $300 each) |
-| Servers reached over RDP or SSH | **3** |
-| Internal websites | **2** |
+| Hosted desktops used as jump boxes (RDP and SSH to servers, internal websites) | **$1,500 a month** |
+| Users | about 5 (about $300 each) |
+| Servers reached over RDP or SSH | **3** (assumed) |
+| Internal websites | **2** (assumed) |
 
 With `topology = "hub"`, each server is its own endpoint behind the central load balancer:
 
@@ -83,20 +83,20 @@ With `topology = "hub"`, each server is its own endpoint behind the central load
 | Central load balancer | $20 |
 | Logs, alarms, dashboard | about $10 |
 | **Verified Access** | **about $862** |
-| Jump boxes today | $1,800 |
-| **Difference** | **about $940 a month less** |
+| Jump boxes today | $1,500 |
+| **Difference** | **about $640 a month less (about $7,700 a year)** |
 
 How the result moves when the assumption is wrong:
 
-| Servers + websites | Verified Access per month | Against $1,800 |
+| Servers + websites | Verified Access per month | Against $1,500 |
 | --- | --- | --- |
-| 1 + 1 | $373 | about $1,430 less |
-| 3 + 2 (the assumption) | $862 | about $940 less |
-| 5 + 3 | $1,351 | about $450 less |
-| 6 + 4 | $1,694 | about the same |
-| 8 + 5 | $2,183 | about $380 more |
+| 1 + 1 | $373 | about $1,130 less |
+| 2 + 2 | $716 | about $780 less |
+| 3 + 2 (the assumption) | $862 | about $640 less |
+| 4 + 4 | $1,402 | about the same |
+| 5 + 5 | $1,745 | about $245 more |
 
-The break-even is `146 x servers + 197 x websites` of about **$1,770** (the spend less the shared $30): up to about 12 servers, 8 websites, or a mix such as 6 and 4. The number of users does not change the Verified Access side; more users only make the jump boxes dearer.
+The break-even is `146 x servers + 197 x websites` of about **$1,470** (the spend less the shared $30): up to about 10 servers, 7 websites, or a mix such as 4 and 4. The number of users does not change the Verified Access side; more users only make the jump boxes dearer.
 
 ### What the model leaves out
 

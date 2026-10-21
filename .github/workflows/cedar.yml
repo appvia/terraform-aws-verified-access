@@ -11,9 +11,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CEDAR_CLI_VERSION: "4.13.0"
-
 jobs:
   cedar-lint:
     name: Cedar Policy Lint
@@ -22,19 +19,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Cache Cedar CLI
-        id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cedar
-          key: cedar-cli-${{ runner.os }}-${{ env.CEDAR_CLI_VERSION }}
-
-      - name: Install Cedar CLI
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: cargo install cedar-policy-cli --version "${CEDAR_CLI_VERSION}" --locked
-
       - name: Test the lint rules
         run: scripts/test-cedar-lint.sh
 
+      ## The same action deployment pipelines call, run against the rendered test policies
       - name: Lint the rendered policies
-        run: scripts/cedar-lint.sh --require-parser tests/golden tests/cedar-lint/valid
+        uses: ./.github/actions/policy-gate
+        with:
+          paths: |
+            tests/golden
+            tests/cedar-lint/valid

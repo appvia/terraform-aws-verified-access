@@ -118,6 +118,78 @@ module "verified_access" {
 
 See [examples/basic](examples/basic) (single VPC) and [examples/hub](examples/hub) (hub and spoke over a transit gateway) for complete, standalone deployments.
 
+### Several web applications on one domain
+
+`app.example.com` and `app1.example.com`, each reached by a different Identity Center group and sent to different targets ([tested](tests/subdomains.tftest.hcl)):
+
+```hcl
+  certificate = { domain_name = "example.com" } # one wildcard certificate, *.example.com, for every application
+
+  groups = {
+    app-users = {
+      policy = {
+        identity_groups = ["11111111-1111-1111-1111-111111111111"] # only this group reaches app.example.com
+        owner           = "app-team"
+        justification   = "The app team uses the app application"
+      }
+      endpoints = {
+        app = {
+          type               = "load-balancer"
+          protocol           = "http"
+          port               = 80                    # the port the application listens on
+          application_domain = "app.example.com"     # users browse to https://app.example.com
+          targets            = ["10.50.0.20"]
+          listener_port      = 8001                  # internal to the central load balancer, one per application
+        }
+      }
+    }
+    app1-users = {
+      policy = {
+        identity_groups = ["22222222-2222-2222-2222-222222222222"] # a different group for app1.example.com
+        owner           = "finance-team"
+        justification   = "The finance team uses the app1 application"
+      }
+      endpoints = {
+        app1 = {
+          type               = "load-balancer"
+          protocol           = "http"
+          port               = 80
+          application_domain = "app1.example.com"
+          targets            = ["10.50.1.30", "10.50.1.31"] # balanced across both
+          listener_port      = 8002
+        }
+      }
+    }
+  }
+```
+
+- **One certificate, one endpoint per subdomain.** The wildcard certificate covers every `*.example.com` application, but AWS needs one endpoint per application domain (so each is priced as one application). The apex `example.com` is not covered by a wildcard; use subdomains.
+- **Different groups:** a group per audience, as above. For one audience with an application only some of its members may reach, keep one group and narrow that endpoint with an [endpoint policy](docs/policies.md#3-narrow-one-endpoint-to-some-of-the-groups-teams).
+- **Different targets:** each endpoint has its own `targets`; several addresses are load balanced.
+- **Listener ports** only need to be unique on the central load balancer; users always use `https://<application domain>`.
+- **DNS:** a CNAME from each application domain to its endpoint domain (output `application_domains`), or let the module create them with `dns`.
+
+### Policy gate in a deployment pipeline
+
+The Cedar checks are a reusable GitHub action. A deployment repository runs it on every pull request and makes the plan depend on it:
+
+```yaml
+jobs:
+  policy-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: appvia/terraform-aws-verified-access/.github/actions/policy-gate@v0.1.0
+        with:
+          paths: policies                                     # the reviewed Cedar copies
+          terraform-test-args: -var-file=values/production.tfvars # rendered policies must match them
+  terraform:
+    needs: policy-gate
+    # ... the usual plan and apply workflow
+```
+
+It checks that the policies the module renders match the reviewed copies, then lints them with the rule set and the official Cedar CLI, using the lint script from the same module version as the action ([how policies are checked](docs/security.md#how-policies-are-rendered-and-checked)).
+
 ### Options
 
 Everything around Verified Access is self-service from the same module block, each part switched on by setting its input:

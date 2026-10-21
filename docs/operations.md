@@ -227,7 +227,7 @@ Most changes are made in place, but some arguments cannot be changed on an exist
 | Moving an endpoint to another group (same endpoint name) | | The endpoint (its group changes in place) |
 | Renaming an endpoint or a group (its map key) | The renamed endpoint, or the group and every endpoint in it, unless a `moved` block maps the old key to the new one | |
 | `vpc_id` | Every security group and target group, and so every endpoint | |
-| `fips_enabled` | The instance and the trust provider attachments; the groups are moved to the new instance in place. *Unverified:* AWS may refuse to delete the old instance while groups are attached, so plan this as a migration | Groups, endpoints |
+| `fips_enabled` | The instance and the trust provider attachments; the groups are moved to the new instance in place. Plan it as a migration: AWS may refuse to delete the old instance while groups are attached | Groups, endpoints |
 | `user_trust_provider.type` or `policy_reference_name`, or the OIDC `issuer`, endpoints, `client_id` or `public_signing_key_endpoint` | The user trust provider and its attachment (a new `policy_reference_name` also re-renders every policy) | The instance, groups and endpoints; the OIDC client secrets change in place |
 | `device_trust_provider.type` or `tenant_id` | The device trust provider and its attachment | |
 | `kms_key_arn`, `create_kms_key`, `description`, policies, tags | | Everything (in place) |

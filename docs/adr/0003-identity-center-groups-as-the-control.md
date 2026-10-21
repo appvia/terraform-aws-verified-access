@@ -15,5 +15,5 @@ Access is decided by **identity group membership** (group IDs or names, sorted, 
 
 - Access is managed where identities already are; joiners and leavers flow through Identity Center.
 - The verified email condition adds nothing where the directory does not verify emails; customers whose directory does verify them can keep it.
-- No device posture check: anyone in the group can connect from any device with the client. Customers with Jamf, CrowdStrike or JumpCloud can add it; device context for TCP endpoints must be tested first (risk R1).
+- No device posture check: anyone in the group can connect from any device with the client. Customers with Jamf, CrowdStrike or JumpCloud can add it; AWS documents device context for browser access, so check TCP endpoints with the provider.
 - Customers who rely on verified emails must opt in.

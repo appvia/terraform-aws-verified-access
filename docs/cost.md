@@ -24,6 +24,15 @@ Prices are AWS list prices from the [Verified Access pricing page](https://aws.a
 
 ## Comparing with per user jump boxes
 
+**Savings at a glance** for the [worked example](#worked-example-a-small-team-assumed-numbers) below: 5 users on $1,500 a month of hosted desktops used as jump boxes, reaching 3 servers and 2 internal websites.
+
+| Setup | Verified Access per month | Saving per month | Saving per year |
+| --- | --- | --- | --- |
+| Websites on their own subdomains (one endpoint each) | about $862 | **about $640 (43%)** | **about $7,700** |
+| Websites as paths of one hostname ([one endpoint and an ALB](#several-web-applications-subdomains-or-paths)) | about $685 | **about $815 (54%)** | **about $9,800** |
+
+It stays cheaper up to about 10 servers, or a mix such as 4 servers and 4 websites; adding users never adds to the Verified Access side.
+
 Many estates reach private systems through a hosted desktop per user (for example Amazon WorkSpaces used as a jump box). The two are priced on different axes, so the comparison is a **break-even model**, not a single answer:
 
 | | Priced per | Grows when |
@@ -109,10 +118,19 @@ The break-even is `146 x servers + 197 x websites` of about **$1,470** (the spen
 
 A shared bastion (for example a t3.small, about $15 to $20 a month) costs less on infrastructure than any Verified Access endpoint, because one bastion serves many applications. The case there rests on removing its operating effort (patching, hardening, key management, access reviews) and its broad network reach, not on infrastructure cost.
 
+### Several web applications: subdomains or paths
+
+An endpoint serves one hostname (AWS does not accept a wildcard such as `*.example.com` as an application domain), so a wildcard certificate saves certificates but not endpoints. How the applications are addressed decides the cost:
+
+| Web applications | One subdomain each (`app.example.com`, `app1.example.com`) | Paths of one hostname (`tools.example.com/app`, `/app1`) |
+| --- | --- | --- |
+| 2 | $394 (2 endpoints) | about $217 (1 endpoint + internal ALB) |
+| 5 | $985 | about $217 |
+| 10 | $1,970 | about $217 |
+
+- **Subdomains** ([example](../README.md#several-web-applications-on-one-domain)): one endpoint each, with its own groups and targets. Works with any application. This is what the module builds today.
+- **Paths**: one endpoint in front of an internal ALB that routes each path to its targets, and one policy with a rule per path and group (for example `context.http_request.path like "/app1/*"`). Each application must work under a path prefix, and all of them share one hostname, sign-in and WAF. Bring your own ALB with `load_balancer_arn` and write the per path rules in `raw_policy`; a module built ALB is on the [roadmap](how-it-works.md#roadmap).
+
 ### Keeping the cost down
 
 Cost grows with the **number of applications**, not users. Keep endpoints to what is actually needed, and group several ports of one service on one TCP endpoint (TCP endpoints accept port ranges).
-
-## The spike itself
-
-Running the demonstration (two endpoints, the NLB, a transit gateway attachment and two small instances) costs about $0.55 an hour, about $13 a day. Torn down after the demonstration.

@@ -273,6 +273,7 @@ sequenceDiagram
 ```
 
 - Needs a **public ACM certificate** for the application domain in the network account, and a CNAME from the application domain to the endpoint domain in whichever DNS the customer runs. The module can request a DNS validated wildcard certificate (`certificate = { domain_name = "example.com" }` covers `*.example.com`, so application domains must be one level below it, for example `app.example.com`) and exports the validation records (`certificate_validation_records`); the DNS records stay with the customer's DNS, wherever it is hosted, unless it is a Route 53 public hosted zone the module may publish them in (`dns = { zone_id = "..." }`). An endpoint can still bring its own `domain_certificate_arn`.
+- **One endpoint serves one hostname.** A wildcard certificate can be shared by every endpoint, but each web application still needs its own endpoint: AWS does not accept `*.example.com` as an application domain (it returns `Parameter ApplicationDomain must be a valid domain name`; see also the [AWS Security blog](https://aws.amazon.com/blogs/security/integrating-aws-verified-access-with-jamf-as-a-device-trust-provider/)). Several subdomains with different groups and targets are therefore several endpoints sharing one certificate ([example](../README.md#several-web-applications-on-one-domain)).
 - HTTP endpoints work through the central **NLB** (a TCP listener); an ALB is not needed.
 - Proven: a page served from a private instance in a spoke VPC, with no public address.
 
@@ -297,7 +298,7 @@ A user who signs in but is not in a permitted group is denied by the Cedar polic
 | --- | --- | --- |
 | IAM Identity Center | Yes (organisation instance, same region) | Proven in testing; the recommended choice where Identity Center is already the workforce directory |
 | OIDC (Okta, Entra ID, Google and others) | Yes | Group names in the `groups` claim, or another claim with `oidc.groups_claim` (a dotted path reaches a nested claim); add the `offline_access` scope for the Connectivity Client. The Connectivity Client can use a separate native application client (`native_client_id`, `native_scope`, `oidc_native_client_secret`) |
-| Device: Jamf, CrowdStrike, JumpCloud | Yes, optional; `sensitive` endpoints require it (fail closed) | Untested. Device context for **TCP** endpoints is unconfirmed by AWS documentation (risk R1): test with the provider before marking TCP endpoints sensitive |
+| Device: Jamf, CrowdStrike, JumpCloud | Yes, optional; `sensitive` endpoints require it (fail closed) | AWS documents device context for browser access; check with the device provider before marking TCP endpoints `sensitive` |
 
 Identity group membership is the control; see [identity](security.md#identity) for the verified email condition.
 
@@ -402,11 +403,10 @@ Not built yet, in no particular order. Ask if one matters to you:
 - A `region` input using the AWS provider v6 per-resource `region` argument, so one provider can deploy to several regions. Today an instance is regional: call the module once per region, each with a provider for that region.
 - More examples: OIDC with Okta and CrowdStrike, an RDS or Aurora endpoint, team-based groups.
 
-### Not yet proven
+### Behaviour AWS does not document
 
-| Item | Status |
+| Item | What to know |
 | --- | --- |
-| Device posture (Jamf, CrowdStrike, JumpCloud) on **TCP** endpoints | Not confirmed by AWS documentation; test with the provider before marking TCP endpoints `sensitive` |
-| Whether revoking access ends an **active** session | New connections are denied after a revoke; active sessions untested |
-| The path through an inspection VPC | Designed, validated by routing analysis only |
-| `rds` endpoints | Supported, untested |
+| Device posture (Jamf, CrowdStrike, JumpCloud) on **TCP** endpoints | AWS documents device context for browser access; check with the device provider before marking TCP endpoints `sensitive` |
+| Established sessions when access is revoked | New connections are denied once the policy change takes effect; AWS does not document whether established sessions are closed |
+| Traffic through an inspection VPC | Works with symmetric routing and the firewall rules in the [checklist](#with-an-inspection-vpc) |

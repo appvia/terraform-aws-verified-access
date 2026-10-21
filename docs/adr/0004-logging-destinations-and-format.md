@@ -16,5 +16,5 @@ Verified Access logs every attempt to CloudWatch Logs, S3 or Firehose, in OCSF `
 ## Consequences
 
 - Personal data in logs: retention is bounded and read access restricted.
-- The log archive copy needs a bucket and policy in the log archive account (not built in the spike).
+- The log archive copy needs a bucket and policy in the log archive account (owned by that account, so the module takes its name).
 - See [logging](../security.md#logging) and [operations](../operations.md#monitoring).

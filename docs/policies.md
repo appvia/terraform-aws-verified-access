@@ -375,7 +375,7 @@ With an OIDC provider, groups are matched by **name** in a claim of the user's t
       policy = {
         identity_groups = ["platform-engineers", "admins"]
         owner           = "platform-team"
-        justification   = "Platform engineers operate the demo tenant hosts"
+        justification   = "Platform engineers operate the tenant hosts"
       }
 ```
 
@@ -543,7 +543,7 @@ The block takes effect after policy propagation (several minutes), like any poli
 | **Types must match** | `"22" == 22` is false, without an error. AWS documents `tcp_flow.destination_port` as a string with the example value `22` | Check the type in a log event before comparing |
 | **Context differs per trust provider** | Identity Center keys `groups` by group ID (`has`); OIDC groups are a list of names (`.contains()`); OIDC claims depend on the provider and scopes | Use the module's structured input; for OIDC check the claim first ([example 6](#6-oidc-with-a-groups-claim)) |
 | **Context differs per protocol** | Web endpoints get `http_request` (method, host, path, query, port, user agent, X-Forwarded-For, client IP); TCP endpoints get only `tcp_flow` (client IP, destination IP, destination port): no user agent, path or method | Only use `http_request` on `http` and `https` endpoints ([example 8](#8-http-only-conditions-method-path-client-ip)) |
-| **Device context on TCP endpoints is unconfirmed** | AWS documents device trust data through browser extensions; the Connectivity Client page says it "adds user identity information and device context" but no page confirms device trust providers for TCP (risk R1, not verified) | Test with the device provider before marking TCP endpoints `sensitive` |
+| **Device context on TCP endpoints is not documented** | AWS documents device trust data through browser extensions; the Connectivity Client page says it "adds user identity information and device context", but no page covers device trust providers for TCP | Check with the device provider before marking TCP endpoints `sensitive` |
 | **No time of day** | The context has no request time, so "office hours only" cannot be written | Not possible in Verified Access |
 | **Group IDs versus names** | Identity Center policies use group IDs (a renamed group keeps working); OIDC uses names (a renamed group silently loses access). Identity Center users can be in up to 1,000 groups; OIDC claims are limited to 11 KB ([quotas](https://docs.aws.amazon.com/verified-access/latest/ug/verified-access-quotas.html)) | The plan rejects names with Identity Center; rename OIDC groups with care |
 | **`email.verified` can be false** | Identity Center reports `email.verified = false` in some setups (for example users provisioned from an external directory), so requiring it denies everyone | `require_verified_email` is off by default; turn it on only where emails are verified ([identity](security.md#identity)) |

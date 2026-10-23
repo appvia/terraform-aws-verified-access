@@ -37,6 +37,7 @@ examples:
 documentation:
 	@echo "--> Generating documentation"
 	@terraform-docs .
+	@python3 scripts/generate-reference.py
 	$(MAKE) documentation-modules
 	$(MAKE) documentation-examples
 

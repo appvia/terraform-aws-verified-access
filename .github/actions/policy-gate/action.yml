@@ -1,0 +1,83 @@
+---
+name: "Verified Access policy gate"
+description: >-
+  Checks the Cedar access policies of a Verified Access deployment: optionally that the policies the module renders
+  match the reviewed copies (terraform test), then lints them with this module's rule set and the official Cedar CLI.
+  The lint script comes from the same module version as the action, so the rules always match the module that renders
+  the policies.
+inputs:
+  paths:
+    description: "The Cedar policy files or directories to lint, one per line"
+    required: false
+    default: "policies"
+  require-parser:
+    description: "Fail when the Cedar CLI cannot parse a policy (lint rule L1), rather than skipping the parse"
+    required: false
+    default: "true"
+  cedar-version:
+    description: "The Cedar CLI version used to parse the policies"
+    required: false
+    default: "4.13.0"
+  terraform-test-args:
+    description: >-
+      When set, runs terraform init and terraform test with these arguments first, e.g.
+      -var-file=values/production.tfvars, so a deployment can check the rendered policies match its reviewed copies
+    required: false
+    default: ""
+  terraform-version:
+    description: "The Terraform version used with terraform-test-args"
+    required: false
+    default: "1.14.5"
+  working-directory:
+    description: "The directory holding the deployment (Terraform root and policies)"
+    required: false
+    default: "."
+runs:
+  using: "composite"
+  steps:
+    - name: Cache Cedar CLI
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/cedar
+        key: cedar-cli-${{ runner.os }}-${{ inputs.cedar-version }}
+
+    - name: Install Cedar CLI
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CEDAR_CLI_VERSION: ${{ inputs.cedar-version }}
+      run: cargo install cedar-policy-cli --version "${CEDAR_CLI_VERSION}" --locked
+
+    - name: Setup Terraform
+      if: inputs.terraform-test-args != ''
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+
+    - name: Rendered policies match the reviewed copies
+      if: inputs.terraform-test-args != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TEST_ARGS: ${{ inputs.terraform-test-args }}
+      run: |
+        terraform init -backend=false -input=false
+        read -r -a args <<< "${TEST_ARGS}"
+        terraform test "${args[@]}"
+
+    - name: Lint the policies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        LINT: ${{ github.action_path }}/../../../scripts/cedar-lint.sh
+        LINT_PATHS: ${{ inputs.paths }}
+        REQUIRE_PARSER: ${{ inputs.require-parser }}
+      run: |
+        targets=()
+        while IFS= read -r path; do
+          [[ -n "${path}" ]] && targets+=("${path}")
+        done <<< "${LINT_PATHS}"
+        flags=()
+        [[ "${REQUIRE_PARSER}" == "true" ]] && flags+=(--require-parser)
+        bash "${LINT}" "${flags[@]}" "${targets[@]}"

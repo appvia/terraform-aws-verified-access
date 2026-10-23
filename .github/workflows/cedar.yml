@@ -1,0 +1,31 @@
+---
+name: Cedar Policy Lint
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  cedar-lint:
+    name: Cedar Policy Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test the lint rules
+        run: scripts/test-cedar-lint.sh
+
+      ## The same action deployment pipelines call, run against the rendered test policies
+      - name: Lint the rendered policies
+        uses: ./.github/actions/policy-gate
+        with:
+          paths: |
+            tests/golden
+            tests/cedar-lint/valid
